@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: ops-intelligence-db
+    environment:
+      POSTGRES_USER: ops
+      POSTGRES_PASSWORD: ops_local_dev
+      POSTGRES_DB: ops_intelligence
+    ports:
+      - "55432:5432"
+    volumes:
+      - ops-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ops -d ops_intelligence"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  ops-pgdata:

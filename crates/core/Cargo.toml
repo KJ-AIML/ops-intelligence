@@ -1,0 +1,17 @@
+[package]
+name = "ops-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Core owns the domain and the ports. It must NOT depend on axum, sqlx, csv,
+# any vendor SDK, or the frontend (tech sheet 26 step 2).
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+uuid.workspace = true

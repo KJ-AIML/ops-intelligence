@@ -1,0 +1,21 @@
+[package]
+name = "ops-worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ops-worker"
+path = "src/main.rs"
+
+[dependencies]
+ops-core.workspace = true
+ops-persistence.workspace = true
+ops-source-csv.workspace = true
+
+anyhow.workspace = true
+dotenvy.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

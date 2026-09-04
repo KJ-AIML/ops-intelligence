@@ -1,0 +1,8 @@
+* text=auto eol=lf
+
+# Golden fixtures: pin line endings so the dataset is byte-stable across
+# platforms. The importer parses fields rather than raw bytes, so CRLF would not
+# change a payload hash today, but a fixture that churns on checkout is not a
+# fixture.
+pilot-data/synthetic-alerts-v1.csv -text eol=lf
+pilot-data/expected-outcomes.json  -text eol=lf

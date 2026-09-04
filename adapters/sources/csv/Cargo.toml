@@ -1,0 +1,14 @@
+[package]
+name = "ops-source-csv"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ops-core.workspace = true
+
+chrono.workspace = true
+csv.workspace = true
+serde.workspace = true
+serde_json.workspace = true
