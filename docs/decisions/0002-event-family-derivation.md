@@ -169,5 +169,5 @@ Mappings are **per-source configuration**, not constants. Two reasons:
 - Real payloads arrive and the v1 keyword table is measured against them.
 - `unclassified` volume becomes material.
 - A real query needs to roll up across families (would motivate hierarchy).
-- Q1 in `pilot-data/README.md` is resolved — grouping across families at the service
-  level would change what `event_family` is *for*.
+- Q1 is resolved by decision 0003: core correlation stays within one family;
+  cross-family relationships belong in the Insight layer.

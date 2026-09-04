@@ -40,3 +40,4 @@ macro_rules! typed_id {
 typed_id!(OrganizationId);
 typed_id!(SourceId);
 typed_id!(RawSignalId);
+typed_id!(EventId);

@@ -15,7 +15,7 @@ Architecture is frozen at v0.1 — see `../../resources/operations-intelligence-
 |---|---|---|
 | 0 | Synthetic pilot dataset + expected-outcome fixture | **done** |
 | 1 | Workspace, PostgreSQL, RawSignal, CSV importer | **done** |
-| 2 | Normalization → Events | not started |
+| 2 | Normalization → Events | **done; acceptance checks below** |
 | 3 | Deterministic correlation → Incidents | not started |
 | 4 | Server: APIs, Generic Webhook, deterministic Insights | not started |
 | 5 | Operations UI | not started |
@@ -32,7 +32,7 @@ crates/core/          domain + ports. No axum, no sqlx, no vendor SDK, no fronte
 adapters/
   persistence/        PostgreSQL via SQLx
   sources/csv/        CSV / spreadsheet source adapter
-apps/worker/          worker binary (currently: the `import` subcommand)
+apps/worker/          worker binary (`import` and `process` subcommands)
 migrations/           SQLx migrations
 pilot-data/           synthetic dataset + expected-outcome oracle
 docs/decisions/       architecture decision records
@@ -70,6 +70,7 @@ The credentials above are local-development only and must not be reused anywhere
 ```sh
 docker compose up -d                                    # PostgreSQL on :55432
 cargo run -p ops-worker -- import pilot-data/synthetic-alerts-v1.csv
+cargo run -p ops-worker -- process
 ```
 
 Migrations run automatically on startup, from an empty database upward.
@@ -86,17 +87,47 @@ Expected output on a clean database:
 `external_id`, collapsed at ingestion per tech sheet §9. The import is idempotent, so a
 second run inserts 0 and reports 69 duplicates.
 
+`process` consumes only `received` RawSignals for `DEFAULT_ORGANIZATION_SLUG`.
+On this fixture it creates **67 Events**, with 67 `processed`, zero `failed`, and
+zero pending signals. A second processing run creates zero Events. Informational,
+unclassified and recovery Events are retained. No correlation is performed.
+
+Each transaction locks one RawSignal, moves it through `processing`, and commits
+the Event and `processed` status together. Invalid payloads or unsupported source
+types commit `failed` with `processing_error`. Database errors roll back the claim
+to `received` and exit unsuccessfully; rerun after correcting the database error.
+Failed payloads remain terminal for inspection; there is no automatic retry or
+evidence rewriting. Concurrent workers skip each other's locked rows.
+
+The worker prints counts for every status and exits unsuccessfully if failures or
+nonterminal work remain (including work another processor currently owns). Event
+timestamps come exclusively from the source RFC3339 `timestamp`; import time is
+only `received_at`. Missing/invalid source timestamps fail explicitly.
+
 ## Checks
 
 ```sh
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
+cargo build --workspace
 cargo test --workspace
 ```
 
-Tests are pure unit tests and need no database. The database-level behaviour (idempotency,
-tenant scoping) is currently verified by running the importer; it becomes an automated
-integration test in Slice 2, when there is a processing loop worth asserting against.
+The default tests include all 67 per-row normalization expectations and malformed
+input checks without a database. The opt-in SQLx acceptance test uses a separate
+local database whose name must end in `_test`. With the compose database running:
+
+```sh
+docker exec ops-intelligence-db createdb -U ops ops_normalization_test
+export TEST_DATABASE_URL=postgres://ops:ops_local_dev@localhost:55432/ops_normalization_test
+cargo test -p ops-persistence --test normalization -- --ignored
+```
+
+In PowerShell set `$env:TEST_DATABASE_URL` instead of `export`. Create the test DB
+once; tests use fresh tenant IDs on each run and retain results for inspection.
+They verify 69 rows → 67 RawSignals → 67 Events, historical timestamps, matching
+family/severity/state, evidence linkage, reruns, competing processors, two-tenant
+isolation, persisted failures, and rollback after a database write failure.
 
 ## Idempotency
 

@@ -1,4 +1,6 @@
+use crate::domains::events::Event;
 use crate::domains::organizations::Organization;
+use crate::domains::raw_signals::ProcessingStatus;
 use crate::domains::raw_signals::RawSignal;
 use crate::domains::sources::{Source, SourceType};
 use crate::error::DomainError;
@@ -65,4 +67,28 @@ pub trait RawSignalRepository: Send + Sync {
         &self,
         organization_id: OrganizationId,
     ) -> Result<Vec<(String, i64)>, DomainError>;
+}
+
+/// Synchronous, CPU-only normalization. Implementations must not perform I/O.
+pub trait SignalNormalizer: Send + Sync {
+    fn normalize(
+        &self,
+        signal: &RawSignal,
+        source_type: SourceType,
+        created_at: DateTime<Utc>,
+    ) -> Result<Event, DomainError>;
+}
+
+#[async_trait]
+pub trait EventRepository: Send + Sync {
+    /// Atomically claim one received signal and persist its Event or failure.
+    /// A persistence error rolls back the claim; a normalization error commits failed.
+    async fn process_next(
+        &self,
+        organization_id: OrganizationId,
+        normalizer: &dyn SignalNormalizer,
+        clock: &dyn Clock,
+    ) -> Result<Option<ProcessingStatus>, DomainError>;
+
+    async fn list(&self, organization_id: OrganizationId) -> Result<Vec<Event>, DomainError>;
 }

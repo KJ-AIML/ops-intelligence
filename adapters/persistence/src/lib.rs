@@ -23,6 +23,8 @@ use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx::Row;
 use std::str::FromStr;
 
+mod events;
+
 fn persistence(e: sqlx::Error) -> DomainError {
     DomainError::Persistence(e.to_string())
 }

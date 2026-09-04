@@ -1,13 +1,10 @@
 //! Worker binary.
 //!
-//! Slice 1 implements one subcommand, `import`, which is the offline/synthetic
-//! ingestion path. The continuous processing loop (RawSignal -> Event) arrives in
-//! Slice 2 as a second subcommand on this same binary — the architecture freezes
-//! two app binaries (server + worker), so the importer lives here rather than
-//! becoming a third.
+//! `import` preserves CSV evidence; `process` drains received signals into Events
+//! for the configured tenant and reports failures and remaining nonterminal work.
 //!
-//! ponytail: argument parsing is hand-rolled. One subcommand and one positional
-//! argument does not need clap; add it when the flag surface actually grows.
+//! ponytail: two subcommands need no argument-parsing dependency; add one when
+//! options grow beyond these positional arguments.
 
 use anyhow::{bail, Context, Result};
 use ops_core::domains::raw_signals::RawSignal;
@@ -23,8 +20,10 @@ use std::path::PathBuf;
 
 const USAGE: &str = "\
 usage: ops-worker import <path-to-csv>
+       ops-worker process
 
   import   Ingest a CSV/spreadsheet export as RawSignals (idempotent; safe to re-run).
+  process  Normalize received RawSignals for the configured tenant, then exit.
 ";
 
 #[tokio::main]
@@ -43,6 +42,7 @@ async fn main() -> Result<()> {
             let path: PathBuf = args.get(2).context("missing <path-to-csv>")?.into();
             import(path).await
         }
+        Some("process") if args.len() == 2 => process().await,
         Some(other) => {
             eprint!("{USAGE}");
             bail!("unknown subcommand: {other}");
@@ -52,6 +52,48 @@ async fn main() -> Result<()> {
             bail!("no subcommand given");
         }
     }
+}
+
+async fn process() -> Result<()> {
+    let database_url =
+        std::env::var("DATABASE_URL").context("DATABASE_URL is not set; see README.md")?;
+    let org_slug =
+        std::env::var("DEFAULT_ORGANIZATION_SLUG").unwrap_or_else(|_| "pilot-org".into());
+    let pool = ops_persistence::connect(&database_url).await?;
+    ops_persistence::run_migrations(&pool).await?;
+    let store = PgStore::new(pool);
+    let organization = store
+        .ensure_by_slug(&org_slug, "Pilot Organization")
+        .await?;
+    let report = ops_core::normalization::process_received(
+        &store,
+        organization.id,
+        &ops_source_csv::CsvNormalizer,
+        &SystemClock,
+    )
+    .await?;
+    println!(
+        "processing complete: {} ({})",
+        organization.slug, organization.id
+    );
+    println!("  events new       {}", report.processed);
+    println!("  signals failed   {}", report.failed);
+    let mut pending = 0;
+    let mut failed = 0;
+    for (status, count) in store.count_by_status(organization.id).await? {
+        println!("  {status:<12} {count:>4}");
+        let parsed: ops_core::ProcessingStatus = status.parse()?;
+        if !parsed.is_terminal() {
+            pending += count;
+        }
+        if parsed == ops_core::ProcessingStatus::Failed {
+            failed += count;
+        }
+    }
+    if pending > 0 || failed > 0 {
+        bail!("tenant needs attention: {pending} nonterminal signals, {failed} failed signals (see raw_signals.processing_error)");
+    }
+    Ok(())
 }
 
 async fn import(path: PathBuf) -> Result<()> {

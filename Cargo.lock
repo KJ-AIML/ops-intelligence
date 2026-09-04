@@ -827,8 +827,10 @@ dependencies = [
  "async-trait",
  "chrono",
  "ops-core",
+ "ops-source-csv",
  "serde_json",
  "sqlx",
+ "tokio",
  "tracing",
  "uuid",
 ]

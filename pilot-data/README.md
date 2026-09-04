@@ -201,11 +201,15 @@ Source share: grafana 31 (44.9%), azure_monitor 21 (30.4%), uptime_kuma 9 (13.0%
 
 Full text in `expected-outcomes.json → known_design_questions`.
 
-**Q1 — blocks Slice 3.** Architecture §3 narrates *"Grafana latency + Azure CPU → one
-incident: Payment API degradation"*. The §10 fingerprint **cannot** produce that, because
-the event families differ. This fixture encodes the §10 rule, so **S01 and S02 are two
-incidents, not one**. If service-level grouping across families is wanted, it is a new
-correlation rule and needs an architecture decision before the correlator is built.
+**Q1 — RESOLVED**, see [decision 0003](../docs/decisions/0003-correlation-stays-within-one-event-family.md).
+Architecture §3 narrates *"Grafana latency + Azure CPU → one incident: Payment API
+degradation"*, which the §10 fingerprint cannot produce because the event families differ.
+Resolution: **core correlation stays conservative and never merges different canonical
+`event_family` values**, however well service, resource and timestamps line up. **S01 and
+S02 remain two incidents** — no expectation in this fixture changes. Cross-family
+relationships (*"CPU saturation may have contributed to the availability incident"*) belong
+to the Insight layer. Over-merging would let one incident silently absorb an unrelated
+problem and mark it recovered; under-merging only costs a longer list.
 
 **Q2.** S16 recovers in 45 seconds. Source inventory §10 asks whether sub-minute
 recoveries should behave differently. Currently treated as a normal incident.

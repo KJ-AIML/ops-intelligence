@@ -1,9 +1,12 @@
 //! CSV / spreadsheet source adapter.
 //!
 //! Responsibility boundary (decision 0002): this adapter extracts raw source
-//! facts only. It does not normalise severity or state, and it does not classify
-//! `event_family`. It preserves each row verbatim so the evidence chain starts
-//! intact, and hands the payload on. Normalisation is the next layer's job.
+//! facts only. It preserves each row verbatim, then extracts SourceFacts and
+//! FamilyHints. CsvNormalizer delegates severity/state/family classification to
+//! the core normalization layer; no canonical keyword table lives in this adapter.
+
+pub mod normalization;
+pub use normalization::CsvNormalizer;
 
 use ops_core::error::DomainError;
 use serde_json::{Map, Value};

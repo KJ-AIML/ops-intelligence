@@ -1618,13 +1618,16 @@
   "known_design_questions": [
     {
       "id": "Q1",
-      "title": "Service-level grouping across event families",
-      "detail": "Architecture 3 narrates 'Grafana latency + Azure CPU -> one incident: Payment API degradation'. The tech-sheet-10 fingerprint (env+service+resource+event_family) cannot produce that, because the families differ. This fixture encodes the tech-sheet-10 rule: S01 and S02 are TWO incidents. If service-level grouping is wanted, it is a new correlation rule and needs an architecture decision before Slice 3.",
+      "title": "Service-level grouping across event families (RESOLVED)",
+      "detail": "RESOLVED: core correlation stays conservative and never merges different canonical event_family values, even when service, resource and timestamps line up. S01 and S02 are TWO incidents, as this fixture already encodes; no expectation changes. Architecture 3's narrative example ('Grafana latency + Azure CPU -> one Payment API degradation incident') is superseded on this point: cross-family relationships such as 'CPU saturation may have contributed to the availability incident' belong to the Insight layer, not to correlation. Over-merging would let one incident silently absorb an unrelated problem and mark it recovered; under-merging only costs a longer list.",
       "affects": [
         "S01",
         "S02"
       ],
-      "blocks_slice": 3
+      "blocks_slice": null,
+      "status": "resolved",
+      "resolved_by": "docs/decisions/0003-correlation-stays-within-one-event-family.md",
+      "resolved_on": "2026-09-04"
     },
     {
       "id": "Q2",
