@@ -1,0 +1,1657 @@
+{
+  "fixture_version": "1",
+  "dataset": "synthetic-alerts-v1.csv",
+  "generated_from": "explicit scenario definitions; every count below is derived, not asserted",
+  "day": "2026-09-02",
+  "timezone": "+07:00",
+  "organization": "pilot-org (single tenant)",
+  "correlation_rules_assumed": {
+    "fingerprint": [
+      "organization_id",
+      "environment",
+      "service",
+      "resource",
+      "event_family"
+    ],
+    "duplicate_window_seconds": 600,
+    "reopen_window_seconds": 1800,
+    "R1": "match an OPEN incident by fingerprint alone (no time bound) - IncidentRepository::find_open_by_fingerprint takes no window",
+    "R2": "firing event + open incident -> attach; relation=duplicate if within duplicate_window of last event, else update",
+    "R3": "firing event + no match -> create incident, relation=trigger",
+    "R4": "resolving event + open incident -> attach as recovery, incident becomes recovered",
+    "R5": "firing event + recovered incident within reopen_window of recovered_at -> reopen, relation=trigger",
+    "R6": "firing event + recovered incident outside reopen_window -> new incident (this is what makes a recurrence)",
+    "R7": "resolving event with no matching incident -> no incident, event still accounted",
+    "R8": "normalized severity info or debug -> no incident, event still accounted",
+    "incident_severity": "max normalized severity across trigger/duplicate/update members"
+  },
+  "canonical_event_families": [
+    "availability",
+    "latency",
+    "error_rate",
+    "saturation_cpu",
+    "saturation_memory",
+    "saturation_disk",
+    "connectivity",
+    "certificate",
+    "backup",
+    "job",
+    "unclassified"
+  ],
+  "normalization_contract": {
+    "note": "Adapters extract raw source facts. The normalization layer maps them to these canonical values. Core correlation only ever sees the canonical values. See docs/decisions/0002-event-family-derivation.md",
+    "severity": {
+      "grafana": {
+        "critical": "critical",
+        "warning": "warning",
+        "info": "info"
+      },
+      "azure_monitor": {
+        "Sev0": "critical",
+        "Sev1": "critical",
+        "Sev2": "warning",
+        "Sev3": "info",
+        "Sev4": "info"
+      },
+      "uptime_kuma": {
+        "__empty__": "derive from state: Down->critical, Up->info, empty->info"
+      },
+      "email": {
+        "CRITICAL": "critical",
+        "WARNING": "warning",
+        "INFO": "info"
+      }
+    },
+    "state": {
+      "firing": [
+        "alerting",
+        "Fired",
+        "Down",
+        "FAILED"
+      ],
+      "resolved": [
+        "ok",
+        "Resolved",
+        "Up",
+        "OK"
+      ],
+      "informational": [
+        ""
+      ]
+    }
+  },
+  "totals": {
+    "csv_rows": 69,
+    "suppressed_as_redelivery_at_ingestion": 2,
+    "expected_events": 67,
+    "expected_incidents": 22,
+    "expected_open_incidents": 8,
+    "expected_recovered_incidents": 14,
+    "expected_critical_incidents": 6,
+    "expected_warning_incidents": 16,
+    "expected_reopened_incidents": 1,
+    "expected_events_linked_to_incident": 52,
+    "expected_events_without_incident": 15,
+    "relation_counts": {
+      "trigger": 23,
+      "duplicate": 10,
+      "recovery": 16,
+      "update": 3
+    },
+    "expected_duplicate_relations": 10,
+    "expected_recovery_relations": 16,
+    "expected_recovery_pairs": 14,
+    "expected_recurrence_patterns": 2,
+    "must_not_correlate_pairs": 10,
+    "scenarios": 16
+  },
+  "noisiest_sources_by_row_count": [
+    {
+      "source": "grafana",
+      "rows": 31,
+      "share_percent": 44.9
+    },
+    {
+      "source": "azure_monitor",
+      "rows": 21,
+      "share_percent": 30.4
+    },
+    {
+      "source": "uptime_kuma",
+      "rows": 9,
+      "share_percent": 13.0
+    },
+    {
+      "source": "email",
+      "rows": 8,
+      "share_percent": 11.6
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "S01",
+      "name": "Critical multi-source outage, recovers",
+      "covers": [
+        "one critical multi-source incident",
+        "exact duplicates",
+        "DOWN -> UP recovery"
+      ],
+      "description": "Grafana and Uptime Kuma both watch the payment API. Same canonical fingerprint from two different vendors collapses into ONE incident, with two recovery events.",
+      "row_ids": [
+        "R016",
+        "R017",
+        "R019",
+        "R021",
+        "R022"
+      ],
+      "row_count": 5,
+      "suppressed_at_ingestion": [],
+      "expected_event_count": 5,
+      "expected_incident_keys": [
+        "INC-S01"
+      ]
+    },
+    {
+      "id": "S02",
+      "name": "CPU saturation on the same resource as S01, recovers",
+      "covers": [
+        "near-simultaneous but unrelated alerts",
+        "exact duplicates"
+      ],
+      "description": "Same environment/service/resource as S01 but a DIFFERENT canonical event_family. Under the frozen section-10 fingerprint this is a SEPARATE incident. See known_design_questions Q1.",
+      "row_ids": [
+        "R018",
+        "R020",
+        "R023"
+      ],
+      "row_count": 3,
+      "suppressed_at_ingestion": [],
+      "expected_event_count": 3,
+      "expected_incident_keys": [
+        "INC-S02"
+      ]
+    },
+    {
+      "id": "S03",
+      "name": "Recurring API latency, 4 separate occurrences across the day",
+      "covers": [
+        "repeated CPU/latency warnings",
+        "recurring incidents",
+        "DOWN -> UP recovery"
+      ],
+      "description": "Four fire/recover cycles on one fingerprint, each separated by far more than the reopen window. Expected: 4 distinct incidents forming ONE recurrence pattern - not one incident, and not 9 incidents.",
+      "row_ids": [
+        "R001",
+        "R002",
+        "R011",
+        "R012",
+        "R013",
+        "R035",
+        "R037",
+        "R050",
+        "R051"
+      ],
+      "row_count": 9,
+      "suppressed_at_ingestion": [],
+      "expected_event_count": 9,
+      "expected_incident_keys": [
+        "INC-S03-A",
+        "INC-S03-B",
+        "INC-S03-C",
+        "INC-S03-D"
+      ]
+    },
+    {
+      "id": "S04",
+      "name": "Recovered then re-fired inside the reopen window, ends unresolved",
+      "covers": [
+        "DOWN -> UP recovery",
+        "unresolved incidents"
+      ],
+      "description": "Recovers at 11:08:44, fires again 628s later (< 1800s reopen window). Expected: the SAME incident reopens rather than a new one being created, and it ends the day open.",
+      "row_ids": [
+        "R028",
+        "R029",
+        "R030"
+      ],
+      "row_count": 3,
+      "suppressed_at_ingestion": [],
+      "expected_event_count": 3,
+      "expected_incident_keys": [
+        "INC-S04"
+      ]
+    },
+    {
+      "id": "S05",
+      "name": "Unresolved memory leak, repeated fires outside the duplicate window",
+      "covers": [
+        "unresolved incidents",
+        "repeated CPU/latency warnings"
+      ],
+      "description": "Three fires spaced more than 10 minutes apart. They attach to the SAME open incident, but as update not duplicate - the duplicate window has passed. Never recovers.",
+      "row_ids": [
+        "R045",
+        "R046",
+        "R047"
+      ],
+      "row_count": 3,
+      "suppressed_at_ingestion": [],
+      "expected_event_count": 3,
+      "expected_incident_keys": [
+        "INC-S05"
+      ]
+    },
+    {
+      "id": "S06",
+      "name": "Email redelivery - identical payload three times (idempotency)",
+      "covers": [
+        "exact duplicates",
+        "unresolved incidents"
+      ],
+      "description": "Same external_id and byte-identical payload delivered 3x. Expected: collapsed at INGESTION (RawSignal) per tech sheet 9, producing 1 Event - NOT 3 events collapsed later by correlation. Different mechanism from the S12 duplicate storm.",
+      "row_ids": [
+        "R003",
+        "R004",
+        "R005"
+      ],
+      "row_count": 3,
+      "suppressed_at_ingestion": [
+        "R004",
+        "R005"
+      ],
+      "expected_event_count": 1,
+      "expected_incident_keys": [
+        "INC-S06"
+      ]
+    },
+    {
+      "id": "S07",
+      "name": "Four unrelated alerts within 16 seconds",
+      "covers": [
+        "near-simultaneous but unrelated alerts",
+        "unresolved incidents",
+        "DOWN -> UP recovery"
+      ],
+      "description": "The anti-correlation guard. Four alerts inside one 16-second span, all different service/resource/family. Expected: 4 separate incidents. A correlator that groups on time proximity fails here.",
+      "row_ids": [
+        "R039",
+        "R040",
+        "R041",
+        "R042",
+        "R043"
+      ],
+      "row_count": 5,
+      "suppressed_at_ingestion": [],
+      "expected_event_count": 5,
+      "expected_incident_keys": [
+        "INC-S07-CERT",
+        "INC-S07-DISK",
+        "INC-S07-WIKI",
+        "INC-S07-5XX"
+      ]
+    },
+    {
+      "id": "S08",
+      "name": "Same service and family, different resource",
+      "covers": [
+        "near-simultaneous but unrelated alerts",
+        "unresolved incidents"
+      ],
+      "description": "Identical alert rule fires on two hosts 48s apart. Expected: 2 incidents. One recovers, one does not - proving recovery is matched per fingerprint, not per alert title.",
+      "row_ids": [
+        "R025",
+        "R026",
+        "R027"
+      ],
+      "row_count": 3,
+      "suppressed_at_ingestion": [],
+      "expected_event_count": 3,
+      "expected_incident_keys": [
+        "INC-S08-W1",
+        "INC-S08-W2"
+      ]
+    },
+    {
+      "id": "S09",
+      "name": "Staging mirror of a production incident, 34 seconds apart",
+      "covers": [
+        "near-simultaneous but unrelated alerts"
+      ],
+      "description": "Byte-identical alert title to S03 occurrence C, fired 34s later, but environment=staging. Expected: its own incident. Guards the environment component of the fingerprint.",
+      "row_ids": [
+        "R036",
+        "R038"
+      ],
+      "row_count": 2,
+      "suppressed_at_ingestion": [],
+      "expected_event_count": 2,
+      "expected_incident_keys": [
+        "INC-S09"
+      ]
+    },
+    {
+      "id": "S11",
+      "name": "Orphan recovery - UP with no preceding DOWN",
+      "covers": [
+        "informational/noisy signals"
+      ],
+      "description": "A resolving event arriving with no matching open incident (the DOWN was never received). Expected: no incident, but the event must still be accounted for - no silent loss.",
+      "row_ids": [
+        "R008"
+      ],
+      "row_count": 1,
+      "suppressed_at_ingestion": [],
+      "expected_event_count": 1,
+      "expected_incident_keys": []
+    },
+    {
+      "id": "S12",
+      "name": "Flap storm - six fires in under five minutes",
+      "covers": [
+        "exact duplicates",
+        "DOWN -> UP recovery"
+      ],
+      "description": "Distinct external_ids (so NOT ingestion-level redelivery) firing repeatedly inside the duplicate window. Expected: 1 incident, 5 duplicate relations, 1 recovery. This is correlation-level dedup - contrast with S06.",
+      "row_ids": [
+        "R057",
+        "R058",
+        "R059",
+        "R060",
+        "R061",
+        "R062",
+        "R063"
+      ],
+      "row_count": 7,
+      "suppressed_at_ingestion": [],
+      "expected_event_count": 7,
+      "expected_incident_keys": [
+        "INC-S12"
+      ]
+    },
+    {
+      "id": "S13",
+      "name": "Second recurrence pattern - memory pressure, 3 occurrences",
+      "covers": [
+        "recurring incidents",
+        "repeated CPU/latency warnings"
+      ],
+      "description": "A second, independent recurrence pattern on a different fingerprint. Ensures recurrence detection is per-fingerprint and can report more than one pattern.",
+      "row_ids": [
+        "R006",
+        "R007",
+        "R032",
+        "R033",
+        "R052",
+        "R053"
+      ],
+      "row_count": 6,
+      "suppressed_at_ingestion": [],
+      "expected_event_count": 6,
+      "expected_incident_keys": [
+        "INC-S13-A",
+        "INC-S13-B",
+        "INC-S13-C"
+      ]
+    },
+    {
+      "id": "S14",
+      "name": "Severity escalation on an open incident, unresolved",
+      "covers": [
+        "unresolved incidents",
+        "exact duplicates"
+      ],
+      "description": "Opens at warning, a duplicate arrives inside the window, then a critical fire arrives outside it. Expected: ONE incident whose severity escalates warning -> critical. Incident severity is the max of its triggering events, not the severity of the first one.",
+      "row_ids": [
+        "R054",
+        "R055",
+        "R056"
+      ],
+      "row_count": 3,
+      "suppressed_at_ingestion": [],
+      "expected_event_count": 3,
+      "expected_incident_keys": [
+        "INC-S14"
+      ]
+    },
+    {
+      "id": "S16",
+      "name": "Fast flap - down and up in 45 seconds",
+      "covers": [
+        "DOWN -> UP recovery"
+      ],
+      "description": "A 45-second outage. Still produces a real, traceable incident. Source inventory 10 asks whether sub-minute recoveries should behave differently - this fixture keeps it visible and leaves the policy question open (Q2).",
+      "row_ids": [
+        "R009",
+        "R010"
+      ],
+      "row_count": 2,
+      "suppressed_at_ingestion": [],
+      "expected_event_count": 2,
+      "expected_incident_keys": [
+        "INC-S16"
+      ]
+    },
+    {
+      "id": "S10",
+      "name": "Informational noise - operational chatter",
+      "covers": [
+        "informational/noisy signals"
+      ],
+      "description": "info-severity signals that must become Events (evidence preserved, counted toward source noise) but must NOT create incidents.",
+      "row_ids": [
+        "R014",
+        "R024",
+        "R031",
+        "R044",
+        "R048",
+        "R064",
+        "R066"
+      ],
+      "row_count": 7,
+      "suppressed_at_ingestion": [],
+      "expected_event_count": 7,
+      "expected_incident_keys": []
+    },
+    {
+      "id": "S15",
+      "name": "Informational noise - digests and advisories",
+      "covers": [
+        "informational/noisy signals"
+      ],
+      "description": "Low-value recurring chatter from email and uptime_kuma. Exists so the noisiest-source insight has something real to measure.",
+      "row_ids": [
+        "R015",
+        "R034",
+        "R049",
+        "R065",
+        "R067",
+        "R068",
+        "R069"
+      ],
+      "row_count": 7,
+      "suppressed_at_ingestion": [],
+      "expected_event_count": 7,
+      "expected_incident_keys": []
+    }
+  ],
+  "normalization_expectations": {
+    "R001": {
+      "event_family": "latency",
+      "severity": "warning",
+      "state": "firing"
+    },
+    "R002": {
+      "event_family": "latency",
+      "severity": "warning",
+      "state": "resolved"
+    },
+    "R003": {
+      "event_family": "backup",
+      "severity": "critical",
+      "state": "firing"
+    },
+    "R006": {
+      "event_family": "saturation_memory",
+      "severity": "warning",
+      "state": "firing"
+    },
+    "R007": {
+      "event_family": "saturation_memory",
+      "severity": "warning",
+      "state": "resolved"
+    },
+    "R008": {
+      "event_family": "availability",
+      "severity": "info",
+      "state": "resolved"
+    },
+    "R009": {
+      "event_family": "availability",
+      "severity": "critical",
+      "state": "firing"
+    },
+    "R010": {
+      "event_family": "availability",
+      "severity": "info",
+      "state": "resolved"
+    },
+    "R011": {
+      "event_family": "latency",
+      "severity": "warning",
+      "state": "firing"
+    },
+    "R012": {
+      "event_family": "latency",
+      "severity": "warning",
+      "state": "firing"
+    },
+    "R013": {
+      "event_family": "latency",
+      "severity": "warning",
+      "state": "resolved"
+    },
+    "R014": {
+      "event_family": "job",
+      "severity": "info",
+      "state": "informational"
+    },
+    "R015": {
+      "event_family": "unclassified",
+      "severity": "info",
+      "state": "informational"
+    },
+    "R016": {
+      "event_family": "availability",
+      "severity": "critical",
+      "state": "firing"
+    },
+    "R017": {
+      "event_family": "availability",
+      "severity": "critical",
+      "state": "firing"
+    },
+    "R018": {
+      "event_family": "saturation_cpu",
+      "severity": "critical",
+      "state": "firing"
+    },
+    "R019": {
+      "event_family": "availability",
+      "severity": "critical",
+      "state": "firing"
+    },
+    "R020": {
+      "event_family": "saturation_cpu",
+      "severity": "critical",
+      "state": "firing"
+    },
+    "R021": {
+      "event_family": "availability",
+      "severity": "info",
+      "state": "resolved"
+    },
+    "R022": {
+      "event_family": "availability",
+      "severity": "critical",
+      "state": "resolved"
+    },
+    "R023": {
+      "event_family": "saturation_cpu",
+      "severity": "critical",
+      "state": "resolved"
+    },
+    "R024": {
+      "event_family": "job",
+      "severity": "info",
+      "state": "informational"
+    },
+    "R025": {
+      "event_family": "saturation_cpu",
+      "severity": "warning",
+      "state": "firing"
+    },
+    "R026": {
+      "event_family": "saturation_cpu",
+      "severity": "warning",
+      "state": "firing"
+    },
+    "R027": {
+      "event_family": "saturation_cpu",
+      "severity": "warning",
+      "state": "resolved"
+    },
+    "R028": {
+      "event_family": "saturation_disk",
+      "severity": "warning",
+      "state": "firing"
+    },
+    "R029": {
+      "event_family": "saturation_disk",
+      "severity": "warning",
+      "state": "resolved"
+    },
+    "R030": {
+      "event_family": "saturation_disk",
+      "severity": "warning",
+      "state": "firing"
+    },
+    "R031": {
+      "event_family": "job",
+      "severity": "info",
+      "state": "informational"
+    },
+    "R032": {
+      "event_family": "saturation_memory",
+      "severity": "warning",
+      "state": "firing"
+    },
+    "R033": {
+      "event_family": "saturation_memory",
+      "severity": "warning",
+      "state": "resolved"
+    },
+    "R034": {
+      "event_family": "unclassified",
+      "severity": "info",
+      "state": "informational"
+    },
+    "R035": {
+      "event_family": "latency",
+      "severity": "warning",
+      "state": "firing"
+    },
+    "R036": {
+      "event_family": "latency",
+      "severity": "warning",
+      "state": "firing"
+    },
+    "R037": {
+      "event_family": "latency",
+      "severity": "warning",
+      "state": "resolved"
+    },
+    "R038": {
+      "event_family": "latency",
+      "severity": "warning",
+      "state": "resolved"
+    },
+    "R039": {
+      "event_family": "certificate",
+      "severity": "warning",
+      "state": "firing"
+    },
+    "R040": {
+      "event_family": "saturation_disk",
+      "severity": "warning",
+      "state": "firing"
+    },
+    "R041": {
+      "event_family": "availability",
+      "severity": "critical",
+      "state": "firing"
+    },
+    "R042": {
+      "event_family": "error_rate",
+      "severity": "warning",
+      "state": "firing"
+    },
+    "R043": {
+      "event_family": "availability",
+      "severity": "info",
+      "state": "resolved"
+    },
+    "R044": {
+      "event_family": "unclassified",
+      "severity": "info",
+      "state": "informational"
+    },
+    "R045": {
+      "event_family": "saturation_memory",
+      "severity": "warning",
+      "state": "firing"
+    },
+    "R046": {
+      "event_family": "saturation_memory",
+      "severity": "warning",
+      "state": "firing"
+    },
+    "R047": {
+      "event_family": "saturation_memory",
+      "severity": "warning",
+      "state": "firing"
+    },
+    "R048": {
+      "event_family": "backup",
+      "severity": "info",
+      "state": "informational"
+    },
+    "R049": {
+      "event_family": "job",
+      "severity": "info",
+      "state": "informational"
+    },
+    "R050": {
+      "event_family": "latency",
+      "severity": "warning",
+      "state": "firing"
+    },
+    "R051": {
+      "event_family": "latency",
+      "severity": "warning",
+      "state": "resolved"
+    },
+    "R052": {
+      "event_family": "saturation_memory",
+      "severity": "warning",
+      "state": "firing"
+    },
+    "R053": {
+      "event_family": "saturation_memory",
+      "severity": "warning",
+      "state": "resolved"
+    },
+    "R054": {
+      "event_family": "connectivity",
+      "severity": "warning",
+      "state": "firing"
+    },
+    "R055": {
+      "event_family": "connectivity",
+      "severity": "warning",
+      "state": "firing"
+    },
+    "R056": {
+      "event_family": "connectivity",
+      "severity": "critical",
+      "state": "firing"
+    },
+    "R057": {
+      "event_family": "connectivity",
+      "severity": "warning",
+      "state": "firing"
+    },
+    "R058": {
+      "event_family": "connectivity",
+      "severity": "warning",
+      "state": "firing"
+    },
+    "R059": {
+      "event_family": "connectivity",
+      "severity": "warning",
+      "state": "firing"
+    },
+    "R060": {
+      "event_family": "connectivity",
+      "severity": "warning",
+      "state": "firing"
+    },
+    "R061": {
+      "event_family": "connectivity",
+      "severity": "warning",
+      "state": "firing"
+    },
+    "R062": {
+      "event_family": "connectivity",
+      "severity": "warning",
+      "state": "firing"
+    },
+    "R063": {
+      "event_family": "connectivity",
+      "severity": "warning",
+      "state": "resolved"
+    },
+    "R064": {
+      "event_family": "unclassified",
+      "severity": "info",
+      "state": "informational"
+    },
+    "R065": {
+      "event_family": "job",
+      "severity": "info",
+      "state": "informational"
+    },
+    "R066": {
+      "event_family": "unclassified",
+      "severity": "info",
+      "state": "informational"
+    },
+    "R067": {
+      "event_family": "unclassified",
+      "severity": "info",
+      "state": "informational"
+    },
+    "R068": {
+      "event_family": "unclassified",
+      "severity": "info",
+      "state": "informational"
+    },
+    "R069": {
+      "event_family": "job",
+      "severity": "info",
+      "state": "informational"
+    }
+  },
+  "ingestion_expectations": {
+    "suppressed_as_redelivery": [
+      "R004",
+      "R005"
+    ],
+    "rule": "identical external_id and identical payload hash for the same source -> single RawSignal, single Event (tech sheet 9)"
+  },
+  "incidents": [
+    {
+      "key": "INC-S01",
+      "scenario": "S01",
+      "fingerprint": {
+        "environment": "production",
+        "service": "payment-api",
+        "resource": "api-prod-01",
+        "event_family": "availability"
+      },
+      "expected_status": "recovered",
+      "expected_severity": "critical",
+      "reopened": false,
+      "expected_event_count": 5,
+      "started_at": "2026-09-02T09:12:04+07:00",
+      "last_event_at": "2026-09-02T09:18:02+07:00",
+      "recovered_at": "2026-09-02T09:18:02+07:00",
+      "members": [
+        {
+          "row_id": "R016",
+          "relation": "trigger"
+        },
+        {
+          "row_id": "R017",
+          "relation": "duplicate"
+        },
+        {
+          "row_id": "R019",
+          "relation": "duplicate"
+        },
+        {
+          "row_id": "R021",
+          "relation": "recovery"
+        },
+        {
+          "row_id": "R022",
+          "relation": "recovery"
+        }
+      ]
+    },
+    {
+      "key": "INC-S02",
+      "scenario": "S02",
+      "fingerprint": {
+        "environment": "production",
+        "service": "payment-api",
+        "resource": "api-prod-01",
+        "event_family": "saturation_cpu"
+      },
+      "expected_status": "recovered",
+      "expected_severity": "critical",
+      "reopened": false,
+      "expected_event_count": 3,
+      "started_at": "2026-09-02T09:13:11+07:00",
+      "last_event_at": "2026-09-02T09:19:47+07:00",
+      "recovered_at": "2026-09-02T09:19:47+07:00",
+      "members": [
+        {
+          "row_id": "R018",
+          "relation": "trigger"
+        },
+        {
+          "row_id": "R020",
+          "relation": "duplicate"
+        },
+        {
+          "row_id": "R023",
+          "relation": "recovery"
+        }
+      ]
+    },
+    {
+      "key": "INC-S03-A",
+      "scenario": "S03",
+      "fingerprint": {
+        "environment": "production",
+        "service": "payment-api",
+        "resource": "api-prod-01",
+        "event_family": "latency"
+      },
+      "expected_status": "recovered",
+      "expected_severity": "warning",
+      "reopened": false,
+      "expected_event_count": 2,
+      "started_at": "2026-09-02T02:40:12+07:00",
+      "last_event_at": "2026-09-02T02:46:33+07:00",
+      "recovered_at": "2026-09-02T02:46:33+07:00",
+      "members": [
+        {
+          "row_id": "R001",
+          "relation": "trigger"
+        },
+        {
+          "row_id": "R002",
+          "relation": "recovery"
+        }
+      ],
+      "recurrence_group": "payment-api-latency"
+    },
+    {
+      "key": "INC-S03-B",
+      "scenario": "S03",
+      "fingerprint": {
+        "environment": "production",
+        "service": "payment-api",
+        "resource": "api-prod-01",
+        "event_family": "latency"
+      },
+      "expected_status": "recovered",
+      "expected_severity": "warning",
+      "reopened": false,
+      "expected_event_count": 3,
+      "started_at": "2026-09-02T07:05:27+07:00",
+      "last_event_at": "2026-09-02T07:12:03+07:00",
+      "recovered_at": "2026-09-02T07:12:03+07:00",
+      "members": [
+        {
+          "row_id": "R011",
+          "relation": "trigger"
+        },
+        {
+          "row_id": "R012",
+          "relation": "duplicate"
+        },
+        {
+          "row_id": "R013",
+          "relation": "recovery"
+        }
+      ],
+      "recurrence_group": "payment-api-latency"
+    },
+    {
+      "key": "INC-S03-C",
+      "scenario": "S03",
+      "fingerprint": {
+        "environment": "production",
+        "service": "payment-api",
+        "resource": "api-prod-01",
+        "event_family": "latency"
+      },
+      "expected_status": "recovered",
+      "expected_severity": "warning",
+      "reopened": false,
+      "expected_event_count": 2,
+      "started_at": "2026-09-02T13:20:33+07:00",
+      "last_event_at": "2026-09-02T13:29:50+07:00",
+      "recovered_at": "2026-09-02T13:29:50+07:00",
+      "members": [
+        {
+          "row_id": "R035",
+          "relation": "trigger"
+        },
+        {
+          "row_id": "R037",
+          "relation": "recovery"
+        }
+      ],
+      "recurrence_group": "payment-api-latency"
+    },
+    {
+      "key": "INC-S03-D",
+      "scenario": "S03",
+      "fingerprint": {
+        "environment": "production",
+        "service": "payment-api",
+        "resource": "api-prod-01",
+        "event_family": "latency"
+      },
+      "expected_status": "recovered",
+      "expected_severity": "warning",
+      "reopened": false,
+      "expected_event_count": 2,
+      "started_at": "2026-09-02T18:45:29+07:00",
+      "last_event_at": "2026-09-02T18:52:46+07:00",
+      "recovered_at": "2026-09-02T18:52:46+07:00",
+      "members": [
+        {
+          "row_id": "R050",
+          "relation": "trigger"
+        },
+        {
+          "row_id": "R051",
+          "relation": "recovery"
+        }
+      ],
+      "recurrence_group": "payment-api-latency"
+    },
+    {
+      "key": "INC-S04",
+      "scenario": "S04",
+      "fingerprint": {
+        "environment": "production",
+        "service": "infra",
+        "resource": "node-04",
+        "event_family": "saturation_disk"
+      },
+      "expected_status": "open",
+      "expected_severity": "warning",
+      "reopened": true,
+      "expected_event_count": 3,
+      "started_at": "2026-09-02T11:02:09+07:00",
+      "last_event_at": "2026-09-02T11:19:12+07:00",
+      "recovered_at": null,
+      "members": [
+        {
+          "row_id": "R028",
+          "relation": "trigger"
+        },
+        {
+          "row_id": "R029",
+          "relation": "recovery"
+        },
+        {
+          "row_id": "R030",
+          "relation": "trigger"
+        }
+      ]
+    },
+    {
+      "key": "INC-S05",
+      "scenario": "S05",
+      "fingerprint": {
+        "environment": "production",
+        "service": "batch-worker",
+        "resource": "worker-prod-02",
+        "event_family": "saturation_memory"
+      },
+      "expected_status": "open",
+      "expected_severity": "warning",
+      "reopened": false,
+      "expected_event_count": 3,
+      "started_at": "2026-09-02T15:10:22+07:00",
+      "last_event_at": "2026-09-02T16:25:11+07:00",
+      "recovered_at": null,
+      "members": [
+        {
+          "row_id": "R045",
+          "relation": "trigger"
+        },
+        {
+          "row_id": "R046",
+          "relation": "update"
+        },
+        {
+          "row_id": "R047",
+          "relation": "update"
+        }
+      ]
+    },
+    {
+      "key": "INC-S06",
+      "scenario": "S06",
+      "fingerprint": {
+        "environment": "production",
+        "service": "backup",
+        "resource": "db-prod-01",
+        "event_family": "backup"
+      },
+      "expected_status": "open",
+      "expected_severity": "critical",
+      "reopened": false,
+      "expected_event_count": 1,
+      "started_at": "2026-09-02T03:15:02+07:00",
+      "last_event_at": "2026-09-02T03:15:02+07:00",
+      "recovered_at": null,
+      "members": [
+        {
+          "row_id": "R003",
+          "relation": "trigger"
+        }
+      ]
+    },
+    {
+      "key": "INC-S07-CERT",
+      "scenario": "S07",
+      "fingerprint": {
+        "environment": "production",
+        "service": "web-frontend",
+        "resource": "cdn-edge-01",
+        "event_family": "certificate"
+      },
+      "expected_status": "open",
+      "expected_severity": "warning",
+      "reopened": false,
+      "expected_event_count": 1,
+      "started_at": "2026-09-02T14:00:03+07:00",
+      "last_event_at": "2026-09-02T14:00:03+07:00",
+      "recovered_at": null,
+      "members": [
+        {
+          "row_id": "R039",
+          "relation": "trigger"
+        }
+      ]
+    },
+    {
+      "key": "INC-S07-DISK",
+      "scenario": "S07",
+      "fingerprint": {
+        "environment": "production",
+        "service": "reporting",
+        "resource": "node-11",
+        "event_family": "saturation_disk"
+      },
+      "expected_status": "open",
+      "expected_severity": "warning",
+      "reopened": false,
+      "expected_event_count": 1,
+      "started_at": "2026-09-02T14:00:07+07:00",
+      "last_event_at": "2026-09-02T14:00:07+07:00",
+      "recovered_at": null,
+      "members": [
+        {
+          "row_id": "R040",
+          "relation": "trigger"
+        }
+      ]
+    },
+    {
+      "key": "INC-S07-WIKI",
+      "scenario": "S07",
+      "fingerprint": {
+        "environment": "production",
+        "service": "wiki",
+        "resource": "wiki-01",
+        "event_family": "availability"
+      },
+      "expected_status": "recovered",
+      "expected_severity": "critical",
+      "reopened": false,
+      "expected_event_count": 2,
+      "started_at": "2026-09-02T14:00:11+07:00",
+      "last_event_at": "2026-09-02T14:06:40+07:00",
+      "recovered_at": "2026-09-02T14:06:40+07:00",
+      "members": [
+        {
+          "row_id": "R041",
+          "relation": "trigger"
+        },
+        {
+          "row_id": "R043",
+          "relation": "recovery"
+        }
+      ]
+    },
+    {
+      "key": "INC-S07-5XX",
+      "scenario": "S07",
+      "fingerprint": {
+        "environment": "production",
+        "service": "search-api",
+        "resource": "search-prod-03",
+        "event_family": "error_rate"
+      },
+      "expected_status": "open",
+      "expected_severity": "warning",
+      "reopened": false,
+      "expected_event_count": 1,
+      "started_at": "2026-09-02T14:00:19+07:00",
+      "last_event_at": "2026-09-02T14:00:19+07:00",
+      "recovered_at": null,
+      "members": [
+        {
+          "row_id": "R042",
+          "relation": "trigger"
+        }
+      ]
+    },
+    {
+      "key": "INC-S08-W1",
+      "scenario": "S08",
+      "fingerprint": {
+        "environment": "production",
+        "service": "web-frontend",
+        "resource": "web-prod-01",
+        "event_family": "saturation_cpu"
+      },
+      "expected_status": "recovered",
+      "expected_severity": "warning",
+      "reopened": false,
+      "expected_event_count": 2,
+      "started_at": "2026-09-02T10:30:14+07:00",
+      "last_event_at": "2026-09-02T10:41:35+07:00",
+      "recovered_at": "2026-09-02T10:41:35+07:00",
+      "members": [
+        {
+          "row_id": "R025",
+          "relation": "trigger"
+        },
+        {
+          "row_id": "R027",
+          "relation": "recovery"
+        }
+      ]
+    },
+    {
+      "key": "INC-S08-W2",
+      "scenario": "S08",
+      "fingerprint": {
+        "environment": "production",
+        "service": "web-frontend",
+        "resource": "web-prod-02",
+        "event_family": "saturation_cpu"
+      },
+      "expected_status": "open",
+      "expected_severity": "warning",
+      "reopened": false,
+      "expected_event_count": 1,
+      "started_at": "2026-09-02T10:31:02+07:00",
+      "last_event_at": "2026-09-02T10:31:02+07:00",
+      "recovered_at": null,
+      "members": [
+        {
+          "row_id": "R026",
+          "relation": "trigger"
+        }
+      ]
+    },
+    {
+      "key": "INC-S09",
+      "scenario": "S09",
+      "fingerprint": {
+        "environment": "staging",
+        "service": "payment-api",
+        "resource": "api-stg-01",
+        "event_family": "latency"
+      },
+      "expected_status": "recovered",
+      "expected_severity": "warning",
+      "reopened": false,
+      "expected_event_count": 2,
+      "started_at": "2026-09-02T13:21:07+07:00",
+      "last_event_at": "2026-09-02T13:33:12+07:00",
+      "recovered_at": "2026-09-02T13:33:12+07:00",
+      "members": [
+        {
+          "row_id": "R036",
+          "relation": "trigger"
+        },
+        {
+          "row_id": "R038",
+          "relation": "recovery"
+        }
+      ]
+    },
+    {
+      "key": "INC-S12",
+      "scenario": "S12",
+      "fingerprint": {
+        "environment": "production",
+        "service": "dns",
+        "resource": "dns-prod-01",
+        "event_family": "connectivity"
+      },
+      "expected_status": "recovered",
+      "expected_severity": "warning",
+      "reopened": false,
+      "expected_event_count": 7,
+      "started_at": "2026-09-02T21:05:00+07:00",
+      "last_event_at": "2026-09-02T21:11:26+07:00",
+      "recovered_at": "2026-09-02T21:11:26+07:00",
+      "members": [
+        {
+          "row_id": "R057",
+          "relation": "trigger"
+        },
+        {
+          "row_id": "R058",
+          "relation": "duplicate"
+        },
+        {
+          "row_id": "R059",
+          "relation": "duplicate"
+        },
+        {
+          "row_id": "R060",
+          "relation": "duplicate"
+        },
+        {
+          "row_id": "R061",
+          "relation": "duplicate"
+        },
+        {
+          "row_id": "R062",
+          "relation": "duplicate"
+        },
+        {
+          "row_id": "R063",
+          "relation": "recovery"
+        }
+      ]
+    },
+    {
+      "key": "INC-S13-A",
+      "scenario": "S13",
+      "fingerprint": {
+        "environment": "production",
+        "service": "web-frontend",
+        "resource": "web-prod-01",
+        "event_family": "saturation_memory"
+      },
+      "expected_status": "recovered",
+      "expected_severity": "warning",
+      "reopened": false,
+      "expected_event_count": 2,
+      "started_at": "2026-09-02T04:15:41+07:00",
+      "last_event_at": "2026-09-02T04:22:08+07:00",
+      "recovered_at": "2026-09-02T04:22:08+07:00",
+      "members": [
+        {
+          "row_id": "R006",
+          "relation": "trigger"
+        },
+        {
+          "row_id": "R007",
+          "relation": "recovery"
+        }
+      ],
+      "recurrence_group": "web-prod-01-memory"
+    },
+    {
+      "key": "INC-S13-B",
+      "scenario": "S13",
+      "fingerprint": {
+        "environment": "production",
+        "service": "web-frontend",
+        "resource": "web-prod-01",
+        "event_family": "saturation_memory"
+      },
+      "expected_status": "recovered",
+      "expected_severity": "warning",
+      "reopened": false,
+      "expected_event_count": 2,
+      "started_at": "2026-09-02T12:05:16+07:00",
+      "last_event_at": "2026-09-02T12:11:29+07:00",
+      "recovered_at": "2026-09-02T12:11:29+07:00",
+      "members": [
+        {
+          "row_id": "R032",
+          "relation": "trigger"
+        },
+        {
+          "row_id": "R033",
+          "relation": "recovery"
+        }
+      ],
+      "recurrence_group": "web-prod-01-memory"
+    },
+    {
+      "key": "INC-S13-C",
+      "scenario": "S13",
+      "fingerprint": {
+        "environment": "production",
+        "service": "web-frontend",
+        "resource": "web-prod-01",
+        "event_family": "saturation_memory"
+      },
+      "expected_status": "recovered",
+      "expected_severity": "warning",
+      "reopened": false,
+      "expected_event_count": 2,
+      "started_at": "2026-09-02T19:30:08+07:00",
+      "last_event_at": "2026-09-02T19:38:21+07:00",
+      "recovered_at": "2026-09-02T19:38:21+07:00",
+      "members": [
+        {
+          "row_id": "R052",
+          "relation": "trigger"
+        },
+        {
+          "row_id": "R053",
+          "relation": "recovery"
+        }
+      ],
+      "recurrence_group": "web-prod-01-memory"
+    },
+    {
+      "key": "INC-S14",
+      "scenario": "S14",
+      "fingerprint": {
+        "environment": "production",
+        "service": "reporting-db",
+        "resource": "sql-prod-02",
+        "event_family": "connectivity"
+      },
+      "expected_status": "open",
+      "expected_severity": "critical",
+      "reopened": false,
+      "expected_event_count": 3,
+      "started_at": "2026-09-02T20:15:03+07:00",
+      "last_event_at": "2026-09-02T20:55:14+07:00",
+      "recovered_at": null,
+      "members": [
+        {
+          "row_id": "R054",
+          "relation": "trigger"
+        },
+        {
+          "row_id": "R055",
+          "relation": "duplicate"
+        },
+        {
+          "row_id": "R056",
+          "relation": "update"
+        }
+      ]
+    },
+    {
+      "key": "INC-S16",
+      "scenario": "S16",
+      "fingerprint": {
+        "environment": "production",
+        "service": "mail-relay",
+        "resource": "mail-relay-01",
+        "event_family": "availability"
+      },
+      "expected_status": "recovered",
+      "expected_severity": "critical",
+      "reopened": false,
+      "expected_event_count": 2,
+      "started_at": "2026-09-02T06:20:10+07:00",
+      "last_event_at": "2026-09-02T06:20:55+07:00",
+      "recovered_at": "2026-09-02T06:20:55+07:00",
+      "members": [
+        {
+          "row_id": "R009",
+          "relation": "trigger"
+        },
+        {
+          "row_id": "R010",
+          "relation": "recovery"
+        }
+      ]
+    }
+  ],
+  "recurrence": [
+    {
+      "group": "payment-api-latency",
+      "fingerprint": {
+        "environment": "production",
+        "service": "payment-api",
+        "resource": "api-prod-01",
+        "event_family": "latency"
+      },
+      "occurrences": 4,
+      "incident_keys": [
+        "INC-S03-A",
+        "INC-S03-B",
+        "INC-S03-C",
+        "INC-S03-D"
+      ]
+    },
+    {
+      "group": "web-prod-01-memory",
+      "fingerprint": {
+        "environment": "production",
+        "service": "web-frontend",
+        "resource": "web-prod-01",
+        "event_family": "saturation_memory"
+      },
+      "occurrences": 3,
+      "incident_keys": [
+        "INC-S13-A",
+        "INC-S13-B",
+        "INC-S13-C"
+      ]
+    }
+  ],
+  "no_incident_events": [
+    {
+      "row_id": "R008",
+      "scenario": "S11",
+      "reason": "resolving_event_with_no_open_incident"
+    },
+    {
+      "row_id": "R014",
+      "scenario": "S10",
+      "reason": "informational_severity"
+    },
+    {
+      "row_id": "R024",
+      "scenario": "S10",
+      "reason": "informational_severity"
+    },
+    {
+      "row_id": "R031",
+      "scenario": "S10",
+      "reason": "informational_severity"
+    },
+    {
+      "row_id": "R044",
+      "scenario": "S10",
+      "reason": "informational_severity"
+    },
+    {
+      "row_id": "R048",
+      "scenario": "S10",
+      "reason": "informational_severity"
+    },
+    {
+      "row_id": "R064",
+      "scenario": "S10",
+      "reason": "informational_severity"
+    },
+    {
+      "row_id": "R066",
+      "scenario": "S10",
+      "reason": "informational_severity"
+    },
+    {
+      "row_id": "R015",
+      "scenario": "S15",
+      "reason": "informational_severity"
+    },
+    {
+      "row_id": "R034",
+      "scenario": "S15",
+      "reason": "informational_severity"
+    },
+    {
+      "row_id": "R049",
+      "scenario": "S15",
+      "reason": "informational_severity"
+    },
+    {
+      "row_id": "R065",
+      "scenario": "S15",
+      "reason": "informational_severity"
+    },
+    {
+      "row_id": "R067",
+      "scenario": "S15",
+      "reason": "informational_severity"
+    },
+    {
+      "row_id": "R068",
+      "scenario": "S15",
+      "reason": "informational_severity"
+    },
+    {
+      "row_id": "R069",
+      "scenario": "S15",
+      "reason": "informational_severity"
+    }
+  ],
+  "must_not_correlate": [
+    {
+      "a": "R016",
+      "b": "R018",
+      "reason": "Same environment, service AND resource, but different canonical event_family (availability vs saturation_cpu). Under the frozen tech-sheet-10 fingerprint these are separate incidents. See Q1."
+    },
+    {
+      "a": "R025",
+      "b": "R026",
+      "reason": "Identical alert rule and service, 48 seconds apart, different resource."
+    },
+    {
+      "a": "R028",
+      "b": "R040",
+      "reason": "Same canonical family (saturation_disk), different service and resource."
+    },
+    {
+      "a": "R035",
+      "b": "R036",
+      "reason": "Identical alert title 34 seconds apart, different environment (staging vs production)."
+    },
+    {
+      "a": "R039",
+      "b": "R040",
+      "reason": "4 seconds apart, different service, resource and family."
+    },
+    {
+      "a": "R039",
+      "b": "R041",
+      "reason": "8 seconds apart, different service, resource and family."
+    },
+    {
+      "a": "R039",
+      "b": "R042",
+      "reason": "16 seconds apart, different service, resource and family."
+    },
+    {
+      "a": "R040",
+      "b": "R041",
+      "reason": "4 seconds apart, different service, resource and family."
+    },
+    {
+      "a": "R040",
+      "b": "R042",
+      "reason": "12 seconds apart, different service, resource and family."
+    },
+    {
+      "a": "R041",
+      "b": "R042",
+      "reason": "8 seconds apart, different service, resource and family."
+    }
+  ],
+  "known_design_questions": [
+    {
+      "id": "Q1",
+      "title": "Service-level grouping across event families",
+      "detail": "Architecture 3 narrates 'Grafana latency + Azure CPU -> one incident: Payment API degradation'. The tech-sheet-10 fingerprint (env+service+resource+event_family) cannot produce that, because the families differ. This fixture encodes the tech-sheet-10 rule: S01 and S02 are TWO incidents. If service-level grouping is wanted, it is a new correlation rule and needs an architecture decision before Slice 3.",
+      "affects": [
+        "S01",
+        "S02"
+      ],
+      "blocks_slice": 3
+    },
+    {
+      "id": "Q2",
+      "title": "Sub-minute flap policy",
+      "detail": "S16 recovers in 45s. Source inventory 10 asks whether 30s / 2min / 15min recoveries should behave differently. This fixture treats it as a normal incident. Revisit with the real pilot user.",
+      "affects": [
+        "S16"
+      ],
+      "blocks_slice": null
+    },
+    {
+      "id": "Q3",
+      "title": "uptime_kuma Down maps to critical for every monitor",
+      "detail": "A per-source default severity is applied because uptime_kuma carries no severity field. It makes internal-wiki being down 'critical' (S07). Severity defaults must therefore be per-source configuration, not hardcoded in core.",
+      "affects": [
+        "S01",
+        "S07",
+        "S16"
+      ],
+      "blocks_slice": null
+    },
+    {
+      "id": "Q4",
+      "title": "CSV carries pre-flattened service/resource/environment",
+      "detail": "Real Grafana labels and Azure ARM resource IDs need extraction in the vendor adapter. This fixture supplies already-clean values, so it exercises the NORMALIZATION layer (severity/state/event_family) but not vendor resource-ID parsing. That is covered later by real payload fixtures per tech sheet 28.",
+      "affects": [],
+      "blocks_slice": null
+    }
+  ]
+}

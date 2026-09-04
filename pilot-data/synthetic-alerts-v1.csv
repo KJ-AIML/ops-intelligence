@@ -1,0 +1,70 @@
+row_id,timestamp,source,external_id,title,severity,service,resource,environment,state,message
+R001,2026-09-02T02:40:12+07:00,grafana,GRF-39880,HighAPILatency p95 above 800ms (payment-api),warning,payment-api,api-prod-01,production,alerting,p95=1240ms over 5m
+R002,2026-09-02T02:46:33+07:00,grafana,GRF-39884,[RESOLVED] HighAPILatency p95 above 800ms (payment-api),warning,payment-api,api-prod-01,production,ok,p95=310ms over 5m
+R003,2026-09-02T03:15:02+07:00,email,EM-88213,ALERT: Nightly backup FAILED on db-prod-01,CRITICAL,backup,db-prod-01,production,FAILED,job nightly-full exited 1 after 00:42:11
+R004,2026-09-02T03:15:02+07:00,email,EM-88213,ALERT: Nightly backup FAILED on db-prod-01,CRITICAL,backup,db-prod-01,production,FAILED,job nightly-full exited 1 after 00:42:11
+R005,2026-09-02T03:15:02+07:00,email,EM-88213,ALERT: Nightly backup FAILED on db-prod-01,CRITICAL,backup,db-prod-01,production,FAILED,job nightly-full exited 1 after 00:42:11
+R006,2026-09-02T04:15:41+07:00,azure_monitor,AZ-77200,Memory percentage greater than 88 (web-prod-01),Sev2,web-frontend,web-prod-01,production,Fired,memory 89.4 percent
+R007,2026-09-02T04:22:08+07:00,azure_monitor,AZ-77206,Memory percentage greater than 88 (web-prod-01),Sev2,web-frontend,web-prod-01,production,Resolved,memory 61.2 percent
+R008,2026-09-02T05:30:19+07:00,uptime_kuma,UK-8950,[vpn-gw] [Up] Service restored,,vpn,vpn-gw-01,production,Up,200 OK in 61ms
+R009,2026-09-02T06:20:10+07:00,uptime_kuma,UK-8990,[mail-relay] [Down] Connection timeout,,mail-relay,mail-relay-01,production,Down,smtp connect timed out
+R010,2026-09-02T06:20:55+07:00,uptime_kuma,UK-8991,[mail-relay] [Up] Service restored,,mail-relay,mail-relay-01,production,Up,smtp banner in 240ms
+R011,2026-09-02T07:05:27+07:00,grafana,GRF-40002,HighAPILatency p95 above 800ms (payment-api),warning,payment-api,api-prod-01,production,alerting,p95=1105ms over 5m
+R012,2026-09-02T07:07:44+07:00,grafana,GRF-40004,HighAPILatency p95 above 800ms (payment-api),warning,payment-api,api-prod-01,production,alerting,p95=1180ms over 5m
+R013,2026-09-02T07:12:03+07:00,grafana,GRF-40009,[RESOLVED] HighAPILatency p95 above 800ms (payment-api),warning,payment-api,api-prod-01,production,ok,p95=288ms over 5m
+R014,2026-09-02T08:02:00+07:00,grafana,GRF-39990,Deployment completed: payment-api v2.14.3,info,payment-api,api-prod-01,production,,rollout finished in 94s
+R015,2026-09-02T08:30:00+07:00,email,EM-88240,Daily infrastructure digest - 2026-09-02,INFO,platform,mail-relay-01,production,,"42 monitors, 3 advisories"
+R016,2026-09-02T09:12:04+07:00,grafana,GRF-40118,[FIRING:1] PaymentAPIHealthCheck (payment-api api-prod-01),critical,payment-api,api-prod-01,production,alerting,health check returned 503 for 3 consecutive probes
+R017,2026-09-02T09:12:26+07:00,uptime_kuma,UK-9042,[payment-api] [Down] Connection refused,,payment-api,api-prod-01,production,Down,connection refused on https://payments.internal/healthz
+R018,2026-09-02T09:13:11+07:00,azure_monitor,AZ-77301,CPU percentage greater than 90 (api-prod-01),Sev1,payment-api,api-prod-01,production,Fired,avg CPU 96.4 percent over 5m
+R019,2026-09-02T09:14:51+07:00,grafana,GRF-40119,[FIRING:1] PaymentAPIHealthCheck (payment-api api-prod-01),critical,payment-api,api-prod-01,production,alerting,health check returned 503 for 3 consecutive probes
+R020,2026-09-02T09:15:38+07:00,azure_monitor,AZ-77305,CPU percentage greater than 90 (api-prod-01),Sev1,payment-api,api-prod-01,production,Fired,avg CPU 94.1 percent over 5m
+R021,2026-09-02T09:17:20+07:00,uptime_kuma,UK-9047,[payment-api] [Up] Service restored,,payment-api,api-prod-01,production,Up,200 OK in 143ms
+R022,2026-09-02T09:18:02+07:00,grafana,GRF-40121,[RESOLVED] PaymentAPIHealthCheck (payment-api api-prod-01),critical,payment-api,api-prod-01,production,ok,health check recovered
+R023,2026-09-02T09:19:47+07:00,azure_monitor,AZ-77312,CPU percentage greater than 90 (api-prod-01),Sev1,payment-api,api-prod-01,production,Resolved,avg CPU 31.2 percent over 5m
+R024,2026-09-02T09:45:00+07:00,grafana,GRF-40130,Scheduled report job finished (reporting),info,reporting,sql-prod-02,production,,12 reports generated
+R025,2026-09-02T10:30:14+07:00,azure_monitor,AZ-77380,CPU percentage greater than 85 (web-prod-01),Sev2,web-frontend,web-prod-01,production,Fired,avg CPU 88.9 percent over 5m
+R026,2026-09-02T10:31:02+07:00,azure_monitor,AZ-77381,CPU percentage greater than 85 (web-prod-02),Sev2,web-frontend,web-prod-02,production,Fired,avg CPU 91.3 percent over 5m
+R027,2026-09-02T10:41:35+07:00,azure_monitor,AZ-77389,CPU percentage greater than 85 (web-prod-01),Sev2,web-frontend,web-prod-01,production,Resolved,avg CPU 42.7 percent over 5m
+R028,2026-09-02T11:02:09+07:00,azure_monitor,AZ-77420,Disk free space less than 10 percent (node-04),Sev2,infra,node-04,production,Fired,8.4 percent free on /var
+R029,2026-09-02T11:08:44+07:00,azure_monitor,AZ-77426,Disk free space less than 10 percent (node-04),Sev2,infra,node-04,production,Resolved,12.1 percent free on /var
+R030,2026-09-02T11:19:12+07:00,azure_monitor,AZ-77433,Disk free space less than 10 percent (node-04),Sev2,infra,node-04,production,Fired,7.9 percent free on /var
+R031,2026-09-02T11:50:00+07:00,azure_monitor,AZ-77435,Autoscale scaled out web-frontend to 4 instances,Sev4,web-frontend,web-prod-01,production,,scale rule cpu above 70
+R032,2026-09-02T12:05:16+07:00,azure_monitor,AZ-77440,Memory percentage greater than 88 (web-prod-01),Sev2,web-frontend,web-prod-01,production,Fired,memory 90.8 percent
+R033,2026-09-02T12:11:29+07:00,azure_monitor,AZ-77447,Memory percentage greater than 88 (web-prod-01),Sev2,web-frontend,web-prod-01,production,Resolved,memory 58.7 percent
+R034,2026-09-02T12:40:00+07:00,email,EM-88255,Microsoft 365 service health advisory - informational,INFO,m365,tenant,production,,advisory MO123456
+R035,2026-09-02T13:20:33+07:00,grafana,GRF-40260,HighAPILatency p95 above 800ms (payment-api),warning,payment-api,api-prod-01,production,alerting,p95=980ms over 5m
+R036,2026-09-02T13:21:07+07:00,grafana,GRF-40261,HighAPILatency p95 above 800ms (payment-api),warning,payment-api,api-stg-01,staging,alerting,p95=1310ms over 5m
+R037,2026-09-02T13:29:50+07:00,grafana,GRF-40264,[RESOLVED] HighAPILatency p95 above 800ms (payment-api),warning,payment-api,api-prod-01,production,ok,p95=302ms over 5m
+R038,2026-09-02T13:33:12+07:00,grafana,GRF-40266,[RESOLVED] HighAPILatency p95 above 800ms (payment-api),warning,payment-api,api-stg-01,staging,ok,p95=265ms over 5m
+R039,2026-09-02T14:00:03+07:00,grafana,GRF-40280,TLSCertificateExpiringSoon 14 days (cdn-edge-01),warning,web-frontend,cdn-edge-01,production,alerting,certificate expires 2026-09-16
+R040,2026-09-02T14:00:07+07:00,azure_monitor,AZ-77501,Disk free space less than 15 percent (node-11),Sev2,reporting,node-11,production,Fired,13.8 percent free on /data
+R041,2026-09-02T14:00:11+07:00,uptime_kuma,UK-9120,[internal-wiki] [Down] Timeout after 10s,,wiki,wiki-01,production,Down,request timed out
+R042,2026-09-02T14:00:19+07:00,grafana,GRF-40283,Elevated5xxRate above 2 percent (search-api),warning,search-api,search-prod-03,production,alerting,5xx ratio 3.1 percent over 5m
+R043,2026-09-02T14:06:40+07:00,uptime_kuma,UK-9126,[internal-wiki] [Up] Service restored,,wiki,wiki-01,production,Up,200 OK in 89ms
+R044,2026-09-02T14:30:00+07:00,grafana,GRF-40290,Dashboard snapshot created (ops-overview),info,platform,grafana-01,production,,snapshot id 8821
+R045,2026-09-02T15:10:22+07:00,grafana,GRF-40320,WorkerMemoryHigh above 85 percent (worker-prod-02),warning,batch-worker,worker-prod-02,production,alerting,rss 86.2 percent of limit
+R046,2026-09-02T15:40:55+07:00,grafana,GRF-40331,WorkerMemoryHigh above 85 percent (worker-prod-02),warning,batch-worker,worker-prod-02,production,alerting,rss 89.7 percent of limit
+R047,2026-09-02T16:25:11+07:00,grafana,GRF-40345,WorkerMemoryHigh above 85 percent (worker-prod-02),warning,batch-worker,worker-prod-02,production,alerting,rss 93.4 percent of limit
+R048,2026-09-02T16:50:00+07:00,email,EM-88290,Nightly backup completed on db-prod-02,INFO,backup,db-prod-02,production,,job nightly-full exited 0 after 00:38:04
+R049,2026-09-02T17:15:00+07:00,uptime_kuma,UK-9150,Monitor added: reporting-portal,,reporting,reporting-01,production,,interval 60s
+R050,2026-09-02T18:45:29+07:00,grafana,GRF-40410,HighAPILatency p95 above 800ms (payment-api),warning,payment-api,api-prod-01,production,alerting,p95=1420ms over 5m
+R051,2026-09-02T18:52:46+07:00,grafana,GRF-40415,[RESOLVED] HighAPILatency p95 above 800ms (payment-api),warning,payment-api,api-prod-01,production,ok,p95=274ms over 5m
+R052,2026-09-02T19:30:08+07:00,azure_monitor,AZ-77600,Memory percentage greater than 88 (web-prod-01),Sev2,web-frontend,web-prod-01,production,Fired,memory 92.1 percent
+R053,2026-09-02T19:38:21+07:00,azure_monitor,AZ-77607,Memory percentage greater than 88 (web-prod-01),Sev2,web-frontend,web-prod-01,production,Resolved,memory 55.9 percent
+R054,2026-09-02T20:15:03+07:00,azure_monitor,AZ-77620,SQL connection pool utilization above 90 (sql-prod-02),Sev2,reporting-db,sql-prod-02,production,Fired,92 percent of 200 connections in use
+R055,2026-09-02T20:22:37+07:00,azure_monitor,AZ-77624,SQL connection pool utilization above 90 (sql-prod-02),Sev2,reporting-db,sql-prod-02,production,Fired,94 percent of 200 connections in use
+R056,2026-09-02T20:55:14+07:00,azure_monitor,AZ-77631,SQL connection pool utilization above 98 (sql-prod-02),Sev1,reporting-db,sql-prod-02,production,Fired,99 percent of 200 connections in use
+R057,2026-09-02T21:05:00+07:00,grafana,GRF-40450,DNSResolutionFailures above threshold (dns-prod-01),warning,dns,dns-prod-01,production,alerting,SERVFAIL ratio 6.2 percent
+R058,2026-09-02T21:05:47+07:00,grafana,GRF-40451,DNSResolutionFailures above threshold (dns-prod-01),warning,dns,dns-prod-01,production,alerting,SERVFAIL ratio 7.1 percent
+R059,2026-09-02T21:06:33+07:00,grafana,GRF-40452,DNSResolutionFailures above threshold (dns-prod-01),warning,dns,dns-prod-01,production,alerting,SERVFAIL ratio 5.8 percent
+R060,2026-09-02T21:07:19+07:00,grafana,GRF-40453,DNSResolutionFailures above threshold (dns-prod-01),warning,dns,dns-prod-01,production,alerting,SERVFAIL ratio 8.0 percent
+R061,2026-09-02T21:08:02+07:00,grafana,GRF-40454,DNSResolutionFailures above threshold (dns-prod-01),warning,dns,dns-prod-01,production,alerting,SERVFAIL ratio 6.9 percent
+R062,2026-09-02T21:09:41+07:00,grafana,GRF-40455,DNSResolutionFailures above threshold (dns-prod-01),warning,dns,dns-prod-01,production,alerting,SERVFAIL ratio 5.5 percent
+R063,2026-09-02T21:11:26+07:00,grafana,GRF-40458,[RESOLVED] DNSResolutionFailures above threshold (dns-prod-01),warning,dns,dns-prod-01,production,ok,SERVFAIL ratio 0.1 percent
+R064,2026-09-02T21:40:00+07:00,grafana,GRF-40460,Alert rule updated: DNSResolutionFailures,info,platform,grafana-01,production,,threshold changed by ops
+R065,2026-09-02T22:00:00+07:00,email,EM-88310,Weekly capacity report generated,INFO,platform,reporting-01,production,,report id 4412
+R066,2026-09-02T22:30:00+07:00,grafana,GRF-40470,Datasource health check ok (prometheus),info,platform,grafana-01,production,,scrape latency 42ms
+R067,2026-09-02T23:10:00+07:00,azure_monitor,AZ-77650,Resource tags updated on rg-production,Sev4,platform,rg-production,production,,14 resources retagged
+R068,2026-09-02T23:45:00+07:00,uptime_kuma,UK-9180,Heartbeat summary: 42 monitors up,,platform,uptime-01,production,,uptime 99.94 percent today
+R069,2026-09-02T23:55:00+07:00,email,EM-88320,Nightly maintenance window started,INFO,platform,tenant,production,,window 23:55-02:00
