@@ -6,6 +6,8 @@
 //! ponytail: two subcommands need no argument-parsing dependency; add one when
 //! options grow beyond these positional arguments.
 
+mod normalizers;
+
 use anyhow::{bail, Context, Result};
 use ops_core::domains::raw_signals::RawSignal;
 use ops_core::domains::sources::SourceType;
@@ -80,15 +82,23 @@ async fn correlate() -> Result<()> {
     for (status, count) in store.count_correlation_status(organization.id).await? {
         println!("  {status:<12} {count:>4}");
     }
+    // Count each status explicitly. Deriving "recovered" as "everything not
+    // open" silently folded acknowledged and resolved incidents into the
+    // recovered figure once the manual lifecycle was added.
     let incidents = store.list_incidents(organization.id).await?;
-    let open = incidents
-        .iter()
-        .filter(|incident| incident.status == ops_core::IncidentStatus::Open)
-        .count();
+    let count_of = |wanted: ops_core::IncidentStatus| {
+        incidents
+            .iter()
+            .filter(|incident| incident.status == wanted)
+            .count()
+    };
     println!(
-        "  incidents        {} (open {open}, recovered {})",
+        "  incidents        {} (open {}, acknowledged {}, recovered {}, resolved {})",
         incidents.len(),
-        incidents.len() - open
+        count_of(ops_core::IncidentStatus::Open),
+        count_of(ops_core::IncidentStatus::Acknowledged),
+        count_of(ops_core::IncidentStatus::Recovered),
+        count_of(ops_core::IncidentStatus::Resolved),
     );
     Ok(())
 }
@@ -107,7 +117,7 @@ async fn process() -> Result<()> {
     let report = ops_core::normalization::process_received(
         &store,
         organization.id,
-        &ops_source_csv::CsvNormalizer,
+        &normalizers::DispatchingNormalizer,
         &SystemClock,
     )
     .await?;

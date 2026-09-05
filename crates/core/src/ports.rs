@@ -1,11 +1,14 @@
 use crate::domains::events::Event;
+use crate::domains::events::Severity;
+use crate::domains::incidents::IncidentStatus;
 use crate::domains::incidents::{Incident, IncidentEvent};
 use crate::domains::organizations::Organization;
 use crate::domains::raw_signals::ProcessingStatus;
 use crate::domains::raw_signals::RawSignal;
 use crate::domains::sources::{Source, SourceType};
 use crate::error::DomainError;
-use crate::ids::{OrganizationId, RawSignalId};
+use crate::ids::{IncidentId, OrganizationId, RawSignalId};
+use crate::insights::{IncidentSummary, OperationsSummary};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
@@ -55,6 +58,32 @@ pub trait SourceRepository: Send + Sync {
         source_id: crate::ids::SourceId,
         at: DateTime<Utc>,
     ) -> Result<(), DomainError>;
+
+    async fn list_sources(
+        &self,
+        organization_id: OrganizationId,
+    ) -> Result<Vec<Source>, DomainError>;
+
+    /// Create a webhook source and return it together with its freshly minted
+    /// token. The token is returned exactly once, here; it is never readable
+    /// again from a list or detail endpoint.
+    async fn create_webhook(
+        &self,
+        organization_id: OrganizationId,
+        name: &str,
+        token: &str,
+    ) -> Result<Source, DomainError>;
+
+    /// Resolve an ingestion token to its source. The tenant comes from the
+    /// token, never from the request body (tech sheet 20).
+    async fn find_by_ingest_token(&self, token: &str) -> Result<Option<Source>, DomainError>;
+
+    async fn set_enabled(
+        &self,
+        organization_id: OrganizationId,
+        source_id: crate::ids::SourceId,
+        enabled: bool,
+    ) -> Result<Source, DomainError>;
 }
 
 #[async_trait]
@@ -94,6 +123,45 @@ pub trait EventRepository: Send + Sync {
     async fn list(&self, organization_id: OrganizationId) -> Result<Vec<Event>, DomainError>;
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct EventFilter {
+    pub from: Option<DateTime<Utc>>,
+    pub to: Option<DateTime<Utc>>,
+    pub source_id: Option<crate::ids::SourceId>,
+    pub severity: Option<Severity>,
+    pub service: Option<String>,
+    pub resource: Option<String>,
+    pub limit: i64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct IncidentFilter {
+    pub status: Option<IncidentStatus>,
+    pub severity: Option<Severity>,
+    pub service: Option<String>,
+    pub resource: Option<String>,
+    pub from: Option<DateTime<Utc>>,
+    pub to: Option<DateTime<Utc>>,
+    pub limit: i64,
+}
+
+/// An incident with the evidence chain that justifies it: every member Event in
+/// source-time order, each carrying the RawSignal it came from.
+#[derive(Debug, Clone)]
+pub struct IncidentWithEvidence {
+    pub incident: IncidentSummary,
+    pub timeline: Vec<EvidenceEntry>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EvidenceEntry {
+    pub event: Event,
+    pub relation: crate::domains::incidents::IncidentEventRelation,
+    pub raw_signal_id: RawSignalId,
+    pub source_name: String,
+    pub raw_payload: serde_json::Value,
+}
+
 #[async_trait]
 pub trait IncidentRepository: Send + Sync {
     /// Use Event.occurred_at only; processing-time is deliberately absent here.
@@ -110,4 +178,56 @@ pub trait IncidentRepository: Send + Sync {
         &self,
         organization_id: OrganizationId,
     ) -> Result<Vec<(String, i64)>, DomainError>;
+}
+
+/// Read side of the product API, plus the two manual transitions.
+///
+/// Separate from the write-path repositories on purpose: the server only ever
+/// needs this trait, so an HTTP handler cannot reach the correlation or
+/// ingestion machinery by accident.
+#[async_trait]
+pub trait ProductQueries: Send + Sync {
+    async fn query_incidents(
+        &self,
+        organization_id: OrganizationId,
+        filter: IncidentFilter,
+    ) -> Result<Vec<IncidentSummary>, DomainError>;
+
+    async fn incident_with_evidence(
+        &self,
+        organization_id: OrganizationId,
+        incident_id: IncidentId,
+    ) -> Result<Option<IncidentWithEvidence>, DomainError>;
+
+    /// `at` is injected rather than read from the wall clock inside the query,
+    /// so the transition is testable and the audit trail records a real time.
+    async fn acknowledge_incident(
+        &self,
+        organization_id: OrganizationId,
+        incident_id: IncidentId,
+        at: DateTime<Utc>,
+    ) -> Result<IncidentSummary, DomainError>;
+
+    async fn resolve_incident(
+        &self,
+        organization_id: OrganizationId,
+        incident_id: IncidentId,
+        at: DateTime<Utc>,
+    ) -> Result<IncidentSummary, DomainError>;
+
+    /// Deterministic Operations View payload, aggregated in SQL.
+    async fn operations_summary(
+        &self,
+        organization_id: OrganizationId,
+        from: Option<DateTime<Utc>>,
+        to: Option<DateTime<Utc>>,
+    ) -> Result<OperationsSummary, DomainError>;
+
+    /// Event explorer. Bounded by `limit` so one request cannot pull the whole
+    /// table into memory.
+    async fn query_events(
+        &self,
+        organization_id: OrganizationId,
+        filter: EventFilter,
+    ) -> Result<Vec<Event>, DomainError>;
 }

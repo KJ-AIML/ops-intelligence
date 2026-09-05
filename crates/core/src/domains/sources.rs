@@ -58,6 +58,9 @@ pub struct Source {
     pub source_type: SourceType,
     pub name: String,
     pub enabled: bool,
+    /// Webhook credential. Unguessable, unique, and never written to a log or
+    /// returned by a list endpoint (tech sheet 21).
+    pub ingest_token: Option<String>,
     pub last_seen_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
 }

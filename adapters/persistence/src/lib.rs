@@ -25,8 +25,9 @@ use std::str::FromStr;
 
 mod events;
 mod incidents;
+mod product;
 
-fn persistence(e: sqlx::Error) -> DomainError {
+pub(crate) fn persistence(e: sqlx::Error) -> DomainError {
     DomainError::Persistence(e.to_string())
 }
 
@@ -54,6 +55,16 @@ pub struct PgStore {
 impl PgStore {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
+    }
+
+    /// Cheap liveness probe for readiness checks. Kept here so the server never
+    /// needs a direct SQLx dependency.
+    pub async fn ping(&self) -> Result<(), DomainError> {
+        sqlx::query("SELECT 1")
+            .execute(&self.pool)
+            .await
+            .map(|_| ())
+            .map_err(persistence)
     }
 
     pub fn pool(&self) -> &PgPool {
@@ -101,7 +112,7 @@ impl SourceRepository for PgStore {
             INSERT INTO sources (id, organization_id, source_type, name)
             VALUES ($1, $2, $3, $4)
             ON CONFLICT (organization_id, name) DO UPDATE SET updated_at = now()
-            RETURNING id, organization_id, source_type, name, enabled, last_seen_at, created_at
+            RETURNING id, organization_id, source_type, name, enabled, ingest_token, last_seen_at, created_at
             "#,
         )
         .bind(SourceId::new().as_uuid())
@@ -112,19 +123,7 @@ impl SourceRepository for PgStore {
         .await
         .map_err(persistence)?;
 
-        let type_str: String = row.try_get("source_type").map_err(persistence)?;
-
-        Ok(Source {
-            id: SourceId::from_uuid(row.try_get("id").map_err(persistence)?),
-            organization_id: OrganizationId::from_uuid(
-                row.try_get("organization_id").map_err(persistence)?,
-            ),
-            source_type: SourceType::from_str(&type_str)?,
-            name: row.try_get("name").map_err(persistence)?,
-            enabled: row.try_get("enabled").map_err(persistence)?,
-            last_seen_at: row.try_get("last_seen_at").map_err(persistence)?,
-            created_at: row.try_get("created_at").map_err(persistence)?,
-        })
+        source_from_row(&row)
     }
 
     async fn touch_last_seen(
@@ -149,6 +148,99 @@ impl SourceRepository for PgStore {
         .map_err(persistence)?;
         Ok(())
     }
+
+    async fn list_sources(
+        &self,
+        organization_id: OrganizationId,
+    ) -> Result<Vec<Source>, DomainError> {
+        let rows = sqlx::query(&format!(
+            "SELECT {SOURCE_COLUMNS} FROM sources WHERE organization_id = $1 ORDER BY name"
+        ))
+        .bind(organization_id.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(persistence)?;
+        rows.iter().map(source_from_row).collect()
+    }
+
+    async fn create_webhook(
+        &self,
+        organization_id: OrganizationId,
+        name: &str,
+        token: &str,
+    ) -> Result<Source, DomainError> {
+        // No upsert here: silently handing back an existing source's row would
+        // make the caller believe the token it just generated is live.
+        let row = sqlx::query(&format!(
+            "INSERT INTO sources (id, organization_id, source_type, name, ingest_token)
+             VALUES ($1, $2, 'generic_webhook', $3, $4)
+             RETURNING {SOURCE_COLUMNS}"
+        ))
+        .bind(SourceId::new().as_uuid())
+        .bind(organization_id.as_uuid())
+        .bind(name)
+        .bind(token)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| match &e {
+            sqlx::Error::Database(db) if db.is_unique_violation() => {
+                DomainError::Validation(format!("a source named {name:?} already exists"))
+            }
+            _ => persistence(e),
+        })?;
+        source_from_row(&row)
+    }
+
+    async fn find_by_ingest_token(&self, token: &str) -> Result<Option<Source>, DomainError> {
+        let row = sqlx::query(&format!(
+            "SELECT {SOURCE_COLUMNS} FROM sources WHERE ingest_token = $1"
+        ))
+        .bind(token)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(persistence)?;
+        row.as_ref().map(source_from_row).transpose()
+    }
+
+    async fn set_enabled(
+        &self,
+        organization_id: OrganizationId,
+        source_id: SourceId,
+        enabled: bool,
+    ) -> Result<Source, DomainError> {
+        let row = sqlx::query(&format!(
+            "UPDATE sources SET enabled = $3, updated_at = now()
+              WHERE organization_id = $1 AND id = $2
+             RETURNING {SOURCE_COLUMNS}"
+        ))
+        .bind(organization_id.as_uuid())
+        .bind(source_id.as_uuid())
+        .bind(enabled)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(persistence)?
+        .ok_or_else(|| DomainError::NotFound(format!("source {source_id} not found")))?;
+        source_from_row(&row)
+    }
+}
+
+const SOURCE_COLUMNS: &str =
+    "id, organization_id, source_type, name, enabled, ingest_token, last_seen_at, created_at";
+
+fn source_from_row(row: &sqlx::postgres::PgRow) -> Result<Source, DomainError> {
+    let type_str: String = row.try_get("source_type").map_err(persistence)?;
+    Ok(Source {
+        id: SourceId::from_uuid(row.try_get("id").map_err(persistence)?),
+        organization_id: OrganizationId::from_uuid(
+            row.try_get("organization_id").map_err(persistence)?,
+        ),
+        source_type: SourceType::from_str(&type_str)?,
+        name: row.try_get("name").map_err(persistence)?,
+        enabled: row.try_get("enabled").map_err(persistence)?,
+        ingest_token: row.try_get("ingest_token").map_err(persistence)?,
+        last_seen_at: row.try_get("last_seen_at").map_err(persistence)?,
+        created_at: row.try_get("created_at").map_err(persistence)?,
+    })
 }
 
 #[async_trait]

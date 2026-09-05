@@ -4,6 +4,8 @@ members = [
     "crates/core",
     "adapters/persistence",
     "adapters/sources/csv",
+    "adapters/sources/webhook",
+    "apps/server",
     "apps/worker",
 ]
 
@@ -17,8 +19,12 @@ license = "UNLICENSED"
 ops-core = { path = "crates/core" }
 ops-persistence = { path = "adapters/persistence" }
 ops-source-csv = { path = "adapters/sources/csv" }
+ops-source-webhook = { path = "adapters/sources/webhook" }
 
 anyhow = "1"
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "cors", "limit"] }
 async-trait = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 csv = "1"
@@ -41,3 +47,4 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+rand = "0.9"

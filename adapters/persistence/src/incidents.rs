@@ -4,8 +4,7 @@ use ops_core::correlation::{firing_relation, relation_for, CorrelationAction};
 use ops_core::ports::IncidentRepository;
 use ops_core::{
     CorrelationWindows, DomainError, Event, EventId, EventState, Incident, IncidentEvent,
-    IncidentEventRelation, IncidentFingerprint, IncidentId, IncidentStatus, OrganizationId,
-    SourceId,
+    IncidentEventRelation, IncidentFingerprint, IncidentId, OrganizationId, SourceId,
 };
 use sqlx::{postgres::PgRow, Row};
 
@@ -21,7 +20,7 @@ impl IncidentRepository for PgStore {
             .bind(event.id.as_uuid()).bind(organization_id.as_uuid()).execute(&mut *tx).await.map_err(persistence)?;
         let fingerprint = IncidentFingerprint::from_event(&event);
         let key = fingerprint.key();
-        let open = find_incident(&mut tx, organization_id, &key, IncidentStatus::Open).await?;
+        let open = find_active_incident(&mut tx, organization_id, &key).await?;
         let recovered = if open.is_none() {
             find_recent_recovered(
                 &mut tx,
@@ -131,13 +130,14 @@ impl IncidentRepository for PgStore {
     }
 }
 
-async fn find_incident(
+/// An acknowledged incident is still ACTIVE: someone looking at a problem does
+/// not stop it happening, so evidence keeps attaching (migration 0004).
+async fn find_active_incident(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     organization_id: OrganizationId,
     key: &str,
-    status: IncidentStatus,
 ) -> Result<Option<Incident>, DomainError> {
-    sqlx::query("SELECT * FROM incidents WHERE organization_id = $1 AND fingerprint = $2 AND status = $3 FOR UPDATE").bind(organization_id.as_uuid()).bind(key).bind(status.as_str()).fetch_optional(&mut **tx).await.map_err(persistence)?.as_ref().map(incident_from_row).transpose()
+    sqlx::query("SELECT * FROM incidents WHERE organization_id = $1 AND fingerprint = $2 AND status IN ('open','acknowledged') FOR UPDATE").bind(organization_id.as_uuid()).bind(key).fetch_optional(&mut **tx).await.map_err(persistence)?.as_ref().map(incident_from_row).transpose()
 }
 async fn find_recent_recovered(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -165,14 +165,14 @@ async fn insert_incident(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     incident: &Incident,
 ) -> Result<(), DomainError> {
-    sqlx::query("INSERT INTO incidents (id,organization_id,fingerprint,environment,service,resource,event_family,status,severity,started_at,last_event_at,recovered_at,reopened_count,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)").bind(incident.id.as_uuid()).bind(incident.organization_id.as_uuid()).bind(incident.fingerprint.key()).bind(&incident.fingerprint.environment).bind(&incident.fingerprint.service).bind(&incident.fingerprint.resource).bind(incident.fingerprint.event_family.as_str()).bind(incident.status.as_str()).bind(incident.severity.as_str()).bind(incident.started_at).bind(incident.last_event_at).bind(incident.recovered_at).bind(incident.reopened_count as i32).bind(incident.created_at).execute(&mut **tx).await.map_err(persistence)?;
+    sqlx::query("INSERT INTO incidents (id,organization_id,fingerprint,environment,service,resource,event_family,status,severity,started_at,last_event_at,recovered_at,acknowledged_at,resolved_at,reopened_count,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)").bind(incident.id.as_uuid()).bind(incident.organization_id.as_uuid()).bind(incident.fingerprint.key()).bind(&incident.fingerprint.environment).bind(&incident.fingerprint.service).bind(&incident.fingerprint.resource).bind(incident.fingerprint.event_family.as_str()).bind(incident.status.as_str()).bind(incident.severity.as_str()).bind(incident.started_at).bind(incident.last_event_at).bind(incident.recovered_at).bind(incident.acknowledged_at).bind(incident.resolved_at).bind(incident.reopened_count as i32).bind(incident.created_at).execute(&mut **tx).await.map_err(persistence)?;
     Ok(())
 }
 async fn update_incident(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     incident: &Incident,
 ) -> Result<(), DomainError> {
-    sqlx::query("UPDATE incidents SET status=$2,severity=$3,last_event_at=$4,recovered_at=$5,reopened_count=$6 WHERE id=$1").bind(incident.id.as_uuid()).bind(incident.status.as_str()).bind(incident.severity.as_str()).bind(incident.last_event_at).bind(incident.recovered_at).bind(incident.reopened_count as i32).execute(&mut **tx).await.map_err(persistence)?;
+    sqlx::query("UPDATE incidents SET status=$2,severity=$3,last_event_at=$4,recovered_at=$5,reopened_count=$6,acknowledged_at=$7,resolved_at=$8 WHERE id=$1").bind(incident.id.as_uuid()).bind(incident.status.as_str()).bind(incident.severity.as_str()).bind(incident.last_event_at).bind(incident.recovered_at).bind(incident.reopened_count as i32).bind(incident.acknowledged_at).bind(incident.resolved_at).execute(&mut **tx).await.map_err(persistence)?;
     Ok(())
 }
 async fn insert_relation(
@@ -252,6 +252,8 @@ fn incident_from_row(row: &PgRow) -> Result<Incident, DomainError> {
         started_at: row.try_get("started_at").map_err(persistence)?,
         last_event_at: row.try_get("last_event_at").map_err(persistence)?,
         recovered_at: row.try_get("recovered_at").map_err(persistence)?,
+        acknowledged_at: row.try_get("acknowledged_at").map_err(persistence)?,
+        resolved_at: row.try_get("resolved_at").map_err(persistence)?,
         reopened_count: row
             .try_get::<i32, _>("reopened_count")
             .map_err(persistence)? as u32,

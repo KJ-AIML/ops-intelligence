@@ -17,8 +17,8 @@ Architecture is frozen at v0.1 — see `../../resources/operations-intelligence-
 | 1 | Workspace, PostgreSQL, RawSignal, CSV importer | **done** |
 | 2 | Normalization → Events | **done; acceptance checks below** |
 | 3 | Deterministic correlation → Incidents | **implemented; acceptance checks below** |
-| 4 | Server: APIs, Generic Webhook, deterministic Insights | not started |
-| 5 | Operations UI | not started |
+| 4 | Server: product API, Generic Webhook, deterministic insights | **done** |
+| 5 | Operations UI | in progress |
 | 6 | AI reasoner behind the port | not started |
 
 No vendor adapter (Grafana / Azure Monitor / Email) is written yet, and none will be until
@@ -114,6 +114,69 @@ The worker prints counts for every status and exits unsuccessfully if failures o
 nonterminal work remain (including work another processor currently owns). Event
 timestamps come exclusively from the source RFC3339 `timestamp`; import time is
 only `received_at`. Missing/invalid source timestamps fail explicitly.
+
+## API
+
+```sh
+cargo run -p ops-server            # listens on APP_PORT, default 8080
+```
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/health`, `/health/ready` | liveness; readiness also pings the database |
+| GET | `/api/v1/operations/summary` | the Operations View payload — counts, noisiest sources, recurring patterns |
+| GET | `/api/v1/incidents` | filter by `status`, `severity`, `service`, `resource`, `from`, `to`, `limit`; `sort=attention` for triage order |
+| GET | `/api/v1/incidents/{id}` | incident plus its full evidence timeline, each entry carrying the original payload |
+| POST | `/api/v1/incidents/{id}/acknowledge` | open → acknowledged |
+| POST | `/api/v1/incidents/{id}/resolve` | → resolved (terminal) |
+| GET | `/api/v1/events` | event explorer, for debugging and trust |
+| GET/POST | `/api/v1/sources` | list, or create a Generic Webhook source |
+| PATCH | `/api/v1/sources/{id}` | enable/disable |
+| POST | `/api/v1/ingest/webhook/{token}` | Generic Webhook ingestion |
+
+### Generic Webhook
+
+Creating a source returns its ingestion URL and token **once**. The token is the
+source's credential: it is never returned again, never logged, and it identifies
+the tenant, so no request body can select an organization.
+
+```sh
+curl -X POST localhost:8080/api/v1/sources -H 'content-type: application/json'      -d '{"name":"grafana-live"}'
+
+curl -X POST localhost:8080/api/v1/ingest/webhook/$TOKEN      -H 'content-type: application/json'      -d '{"timestamp":"2026-09-03T09:42:10+07:00","title":"API latency high",
+          "severity":"warning","service":"payment-api","resource":"api-prod-01",
+          "environment":"production","state":"firing","external_id":"grafana-123"}'
+```
+
+`timestamp` and `title` are the required minimum. Ingestion persists the
+RawSignal and returns immediately — `202` for a new signal, `200` with
+`"duplicate": true` for a redelivery, so a sender stops retrying. Normalization
+and correlation happen in the worker, so a slow pipeline can never make a
+source's alert delivery time out.
+
+### Incident lifecycle
+
+```
+open ──acknowledge──> acknowledged ──┐
+  │                                  ├── resolve ──> resolved  (terminal)
+  └── recovery event ──> recovered ──┘
+              │
+              └── matching event inside the reopen window ──> open
+```
+
+`acknowledged` is **active**: someone looking at an incident does not stop it
+collecting evidence, so correlation keeps attaching to it. `resolved` is
+terminal and never reopens — a later matching event starts a new incident, which
+is what makes the repeat visible as a recurrence. Reopening clears a prior
+acknowledgement, because a repeat needs fresh eyes.
+
+### Deterministic insights
+
+`sort=attention` ranks incidents by a pure, explainable function
+(`crates/core/src/insights.rs`), not a model: still-happening beats recovered,
+unacknowledged beats acknowledged, critical beats warning, recurring beats
+one-off, and recency breaks ties. Every incident's `attention_score` is returned
+so the ordering can be checked rather than trusted.
 
 ## Checks
 
