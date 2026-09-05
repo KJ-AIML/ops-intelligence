@@ -1,4 +1,5 @@
 use crate::domains::events::Event;
+use crate::domains::incidents::{Incident, IncidentEvent};
 use crate::domains::organizations::Organization;
 use crate::domains::raw_signals::ProcessingStatus;
 use crate::domains::raw_signals::RawSignal;
@@ -91,4 +92,22 @@ pub trait EventRepository: Send + Sync {
     ) -> Result<Option<ProcessingStatus>, DomainError>;
 
     async fn list(&self, organization_id: OrganizationId) -> Result<Vec<Event>, DomainError>;
+}
+
+#[async_trait]
+pub trait IncidentRepository: Send + Sync {
+    /// Use Event.occurred_at only; processing-time is deliberately absent here.
+    async fn correlate_next(&self, organization_id: OrganizationId) -> Result<bool, DomainError>;
+    async fn list_incidents(
+        &self,
+        organization_id: OrganizationId,
+    ) -> Result<Vec<Incident>, DomainError>;
+    async fn list_incident_events(
+        &self,
+        organization_id: OrganizationId,
+    ) -> Result<Vec<IncidentEvent>, DomainError>;
+    async fn count_correlation_status(
+        &self,
+        organization_id: OrganizationId,
+    ) -> Result<Vec<(String, i64)>, DomainError>;
 }

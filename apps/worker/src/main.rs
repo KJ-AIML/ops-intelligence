@@ -11,8 +11,8 @@ use ops_core::domains::raw_signals::RawSignal;
 use ops_core::domains::sources::SourceType;
 use ops_core::ids::SourceId;
 use ops_core::ports::{
-    Clock, InsertOutcome, OrganizationRepository, RawSignalRepository, SourceRepository,
-    SystemClock,
+    Clock, IncidentRepository, InsertOutcome, OrganizationRepository, RawSignalRepository,
+    SourceRepository, SystemClock,
 };
 use ops_persistence::PgStore;
 use std::collections::BTreeMap;
@@ -21,9 +21,11 @@ use std::path::PathBuf;
 const USAGE: &str = "\
 usage: ops-worker import <path-to-csv>
        ops-worker process
+       ops-worker correlate
 
   import   Ingest a CSV/spreadsheet export as RawSignals (idempotent; safe to re-run).
   process  Normalize received RawSignals for the configured tenant, then exit.
+  correlate Correlate normalized Events for the configured tenant, then exit.
 ";
 
 #[tokio::main]
@@ -43,6 +45,7 @@ async fn main() -> Result<()> {
             import(path).await
         }
         Some("process") if args.len() == 2 => process().await,
+        Some("correlate") if args.len() == 2 => correlate().await,
         Some(other) => {
             eprint!("{USAGE}");
             bail!("unknown subcommand: {other}");
@@ -52,6 +55,42 @@ async fn main() -> Result<()> {
             bail!("no subcommand given");
         }
     }
+}
+
+async fn correlate() -> Result<()> {
+    let database_url =
+        std::env::var("DATABASE_URL").context("DATABASE_URL is not set; see README.md")?;
+    let org_slug =
+        std::env::var("DEFAULT_ORGANIZATION_SLUG").unwrap_or_else(|_| "pilot-org".into());
+    let pool = ops_persistence::connect(&database_url).await?;
+    ops_persistence::run_migrations(&pool).await?;
+    let store = PgStore::new(pool);
+    let organization = store
+        .ensure_by_slug(&org_slug, "Pilot Organization")
+        .await?;
+    let mut correlated = 0usize;
+    while store.correlate_next(organization.id).await? {
+        correlated += 1;
+    }
+    println!(
+        "correlation complete: {} ({})",
+        organization.slug, organization.id
+    );
+    println!("  events handled   {correlated}");
+    for (status, count) in store.count_correlation_status(organization.id).await? {
+        println!("  {status:<12} {count:>4}");
+    }
+    let incidents = store.list_incidents(organization.id).await?;
+    let open = incidents
+        .iter()
+        .filter(|incident| incident.status == ops_core::IncidentStatus::Open)
+        .count();
+    println!(
+        "  incidents        {} (open {open}, recovered {})",
+        incidents.len(),
+        incidents.len() - open
+    );
+    Ok(())
 }
 
 async fn process() -> Result<()> {

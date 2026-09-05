@@ -16,7 +16,7 @@ Architecture is frozen at v0.1 — see `../../resources/operations-intelligence-
 | 0 | Synthetic pilot dataset + expected-outcome fixture | **done** |
 | 1 | Workspace, PostgreSQL, RawSignal, CSV importer | **done** |
 | 2 | Normalization → Events | **done; acceptance checks below** |
-| 3 | Deterministic correlation → Incidents | not started |
+| 3 | Deterministic correlation → Incidents | **implemented; acceptance checks below** |
 | 4 | Server: APIs, Generic Webhook, deterministic Insights | not started |
 | 5 | Operations UI | not started |
 | 6 | AI reasoner behind the port | not started |
@@ -32,7 +32,7 @@ crates/core/          domain + ports. No axum, no sqlx, no vendor SDK, no fronte
 adapters/
   persistence/        PostgreSQL via SQLx
   sources/csv/        CSV / spreadsheet source adapter
-apps/worker/          worker binary (`import` and `process` subcommands)
+apps/worker/          worker binary (`import`, `process`, `correlate` subcommands)
 migrations/           SQLx migrations
 pilot-data/           synthetic dataset + expected-outcome oracle
 docs/decisions/       architecture decision records
@@ -71,6 +71,7 @@ The credentials above are local-development only and must not be reused anywhere
 docker compose up -d                                    # PostgreSQL on :55432
 cargo run -p ops-worker -- import pilot-data/synthetic-alerts-v1.csv
 cargo run -p ops-worker -- process
+cargo run -p ops-worker -- correlate
 ```
 
 Migrations run automatically on startup, from an empty database upward.
@@ -98,6 +99,16 @@ types commit `failed` with `processing_error`. Database errors roll back the cla
 to `received` and exit unsuccessfully; rerun after correcting the database error.
 Failed payloads remain terminal for inspection; there is no automatic retry or
 evidence rewriting. Concurrent workers skip each other's locked rows.
+
+`correlate` drains Events by `occurred_at`, never import or processing time. Its
+fingerprint is tenant + environment + service + resource + canonical event family.
+Events in distinct families remain distinct incidents even when their service,
+resource and timestamps are identical. Informational/non-actionable Events and
+orphan recoveries are explicitly marked ignored; linked Events receive exactly one
+`trigger`, `duplicate`, `update`, or `recovery` relation. Re-running is idempotent.
+For the pilot fixture it produces 22 Incidents: 8 open and 14 recovered, with
+52 linked Events and 15 explicitly ignored Events. This includes 10 duplicate
+relations, 16 recovery relations, one reopen, and no cross-family grouping.
 
 The worker prints counts for every status and exits unsuccessfully if failures or
 nonterminal work remain (including work another processor currently owns). Event

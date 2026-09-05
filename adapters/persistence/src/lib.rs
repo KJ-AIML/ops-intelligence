@@ -24,6 +24,7 @@ use sqlx::Row;
 use std::str::FromStr;
 
 mod events;
+mod incidents;
 
 fn persistence(e: sqlx::Error) -> DomainError {
     DomainError::Persistence(e.to_string())
