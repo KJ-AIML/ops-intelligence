@@ -2,12 +2,14 @@ use crate::domains::events::Event;
 use crate::domains::events::Severity;
 use crate::domains::incidents::IncidentStatus;
 use crate::domains::incidents::{Incident, IncidentEvent};
+use crate::domains::insights::Insight;
 use crate::domains::organizations::Organization;
 use crate::domains::raw_signals::ProcessingStatus;
 use crate::domains::raw_signals::RawSignal;
 use crate::domains::sources::{Source, SourceType};
 use crate::error::DomainError;
 use crate::ids::{IncidentId, OrganizationId, RawSignalId};
+
 use crate::insights::{IncidentSummary, OperationsSummary};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -230,4 +232,32 @@ pub trait ProductQueries: Send + Sync {
         organization_id: OrganizationId,
         filter: EventFilter,
     ) -> Result<Vec<Event>, DomainError>;
+}
+
+#[async_trait]
+pub trait InsightRepository: Send + Sync {
+    /// Record a reasoning outcome, success or failure. Failures are stored too:
+    /// no silent loss applies to intelligence as much as to ingestion.
+    async fn insert(&self, insight: &Insight) -> Result<(), DomainError>;
+
+    async fn list_for_incident(
+        &self,
+        organization_id: OrganizationId,
+        incident_id: IncidentId,
+    ) -> Result<Vec<Insight>, DomainError>;
+
+    async fn list_recent(
+        &self,
+        organization_id: OrganizationId,
+        limit: i64,
+    ) -> Result<Vec<Insight>, DomainError>;
+
+    /// Incidents that have no successful insight of this type yet, ranked so a
+    /// bounded run explains the ones that matter most first.
+    async fn incidents_needing_insight(
+        &self,
+        organization_id: OrganizationId,
+        insight_type: crate::domains::insights::InsightType,
+        limit: i64,
+    ) -> Result<Vec<IncidentSummary>, DomainError>;
 }

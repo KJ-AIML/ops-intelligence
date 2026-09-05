@@ -21,4 +21,9 @@ pub enum DomainError {
 
     #[error("persistence error: {0}")]
     Persistence(String),
+
+    /// A reasoning attempt failed: disabled, refused, unreachable, or the
+    /// response would not validate. Never fatal to the pipeline.
+    #[error("reasoning error: {0}")]
+    Reasoning(String),
 }

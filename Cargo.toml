@@ -5,6 +5,7 @@ members = [
     "adapters/persistence",
     "adapters/sources/csv",
     "adapters/sources/webhook",
+    "adapters/ai/anthropic",
     "apps/server",
     "apps/worker",
 ]
@@ -20,6 +21,7 @@ ops-core = { path = "crates/core" }
 ops-persistence = { path = "adapters/persistence" }
 ops-source-csv = { path = "adapters/sources/csv" }
 ops-source-webhook = { path = "adapters/sources/webhook" }
+ops-ai-anthropic = { path = "adapters/ai/anthropic" }
 
 anyhow = "1"
 axum = "0.8"
@@ -48,3 +50,4 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 rand = "0.9"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

@@ -7,6 +7,7 @@
 //! options grow beyond these positional arguments.
 
 mod normalizers;
+mod reasoning;
 
 use anyhow::{bail, Context, Result};
 use ops_core::domains::raw_signals::RawSignal;
@@ -24,10 +25,13 @@ const USAGE: &str = "\
 usage: ops-worker import <path-to-csv>
        ops-worker process
        ops-worker correlate
+       ops-worker reason [limit]
 
   import   Ingest a CSV/spreadsheet export as RawSignals (idempotent; safe to re-run).
   process  Normalize received RawSignals for the configured tenant, then exit.
   correlate Correlate normalized Events for the configured tenant, then exit.
+  reason   Generate bounded AI explanations for incidents lacking one (default limit 10).
+           Does nothing unless AI_ENABLED=true and AI_API_KEY is set.
 ";
 
 #[tokio::main]
@@ -48,6 +52,13 @@ async fn main() -> Result<()> {
         }
         Some("process") if args.len() == 2 => process().await,
         Some("correlate") if args.len() == 2 => correlate().await,
+        Some("reason") => {
+            let limit = match args.get(2) {
+                None => 10,
+                Some(v) => v.parse().context("limit must be a positive integer")?,
+            };
+            reason(limit).await
+        }
         Some(other) => {
             eprint!("{USAGE}");
             bail!("unknown subcommand: {other}");
@@ -269,5 +280,45 @@ async fn import(path: PathBuf) -> Result<()> {
     }
 
     tracing::info!(inserted, duplicates, "import complete");
+    Ok(())
+}
+
+async fn reason(limit: i64) -> Result<()> {
+    let database_url =
+        std::env::var("DATABASE_URL").context("DATABASE_URL is not set; see README.md")?;
+    let org_slug =
+        std::env::var("DEFAULT_ORGANIZATION_SLUG").unwrap_or_else(|_| "pilot-org".into());
+    let pool = ops_persistence::connect(&database_url).await?;
+    ops_persistence::run_migrations(&pool).await?;
+    let store = PgStore::new(pool);
+    let organization = store
+        .ensure_by_slug(&org_slug, "Pilot Organization")
+        .await?;
+
+    let provider = reasoning::provider_from_env();
+    let report = reasoning::run(
+        &store,
+        organization.id,
+        provider.as_ref(),
+        &SystemClock,
+        limit,
+    )
+    .await?;
+
+    println!(
+        "reasoning complete: {} ({})",
+        organization.slug, organization.id
+    );
+    println!("  provider         {} / {}", report.provider, report.model);
+    println!("  incidents due    {}", report.considered);
+    if report.enabled {
+        println!("  explained        {}", report.explained);
+        println!("  failed           {}", report.failed);
+    } else {
+        // Deliberately not an error: the deterministic product is complete
+        // without AI, and this is the default state (decision 0004).
+        println!("  AI is disabled — set AI_ENABLED=true and AI_API_KEY to generate insights.");
+        println!("  Everything else in the pipeline is unaffected.");
+    }
     Ok(())
 }

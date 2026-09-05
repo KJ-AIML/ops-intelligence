@@ -20,7 +20,9 @@ use chrono::{DateTime, Utc};
 use ops_core::domains::events::Severity;
 use ops_core::domains::incidents::IncidentStatus;
 use ops_core::ids::{IncidentId, OrganizationId, SourceId};
-use ops_core::ports::{EventFilter, IncidentFilter, ProductQueries, SourceRepository};
+use ops_core::ports::{
+    EventFilter, IncidentFilter, InsightRepository, ProductQueries, SourceRepository,
+};
 use ops_core::{Clock, DomainError, SystemClock};
 use ops_persistence::PgStore;
 use serde::Deserialize;
@@ -97,6 +99,8 @@ async fn main() -> Result<()> {
         .route("/api/v1/incidents/{id}", get(get_incident))
         .route("/api/v1/incidents/{id}/acknowledge", post(acknowledge))
         .route("/api/v1/incidents/{id}/resolve", post(resolve))
+        .route("/api/v1/incidents/{id}/insights", get(incident_insights))
+        .route("/api/v1/insights", get(list_insights))
         .route("/api/v1/events", get(list_events))
         .route("/api/v1/sources", get(list_sources).post(create_source))
         .route("/api/v1/sources/{id}", patch(update_source))
@@ -131,6 +135,12 @@ impl IntoResponse for ApiError {
         let (status, message) = match &self.0 {
             DomainError::Validation(m) => (StatusCode::BAD_REQUEST, m.clone()),
             DomainError::NotFound(m) => (StatusCode::NOT_FOUND, m.clone()),
+            // A reasoning failure never breaks a request: the deterministic
+            // answer is still correct and still served.
+            DomainError::Reasoning(m) => {
+                tracing::warn!(reason = %m, "reasoning unavailable");
+                (StatusCode::SERVICE_UNAVAILABLE, m.clone())
+            }
             DomainError::Source(m) => (StatusCode::BAD_REQUEST, m.clone()),
             DomainError::Persistence(m) => {
                 tracing::error!(error = %m, "persistence failure");
@@ -379,4 +389,32 @@ fn parse_incident_id(raw: &str) -> Result<IncidentId, DomainError> {
     uuid::Uuid::parse_str(raw)
         .map(IncidentId::from_uuid)
         .map_err(|_| DomainError::Validation("incident id must be a UUID".into()))
+}
+
+async fn incident_insights(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Vec<dto::InsightDto>>> {
+    let id = parse_incident_id(&id)?;
+    let insights = state
+        .store
+        .list_for_incident(state.organization_id, id)
+        .await?;
+    Ok(Json(insights.iter().map(dto::InsightDto::from).collect()))
+}
+
+#[derive(Deserialize)]
+struct InsightQuery {
+    limit: Option<i64>,
+}
+
+async fn list_insights(
+    State(state): State<AppState>,
+    Query(q): Query<InsightQuery>,
+) -> ApiResult<Json<Vec<dto::InsightDto>>> {
+    let insights = state
+        .store
+        .list_recent(state.organization_id, q.limit.unwrap_or(DEFAULT_LIMIT))
+        .await?;
+    Ok(Json(insights.iter().map(dto::InsightDto::from).collect()))
 }

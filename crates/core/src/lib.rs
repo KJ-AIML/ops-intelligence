@@ -8,23 +8,25 @@ pub mod correlation;
 pub mod error;
 pub mod ids;
 pub mod insights;
+pub mod intelligence;
 pub mod normalization;
 pub mod ports;
 
 pub mod domains {
     pub mod events;
     pub mod incidents;
+    pub mod insights;
     pub mod organizations;
     pub mod raw_signals;
     pub mod sources;
 }
 
 pub use error::DomainError;
-pub use ids::{EventId, IncidentId, OrganizationId, RawSignalId, SourceId};
+pub use ids::{EventId, IncidentId, InsightId, OrganizationId, RawSignalId, SourceId};
 pub use ports::{
     Clock, EventFilter, EventRepository, IncidentFilter, IncidentRepository, IncidentWithEvidence,
-    InsertOutcome, OrganizationRepository, ProductQueries, RawSignalRepository, SignalNormalizer,
-    SourceRepository, SystemClock,
+    InsertOutcome, InsightRepository, OrganizationRepository, ProductQueries, RawSignalRepository,
+    SignalNormalizer, SourceRepository, SystemClock,
 };
 
 pub use domains::events::{Event, EventFamily, EventState, Severity};
@@ -40,3 +42,9 @@ pub use insights::{
     SourceNoise,
 };
 pub use normalization::{FamilyHints, SourceFacts, SourceNormalizationConfig};
+
+pub use domains::insights::{Insight, InsightSource, InsightStatus, InsightType, ModelMetadata};
+pub use intelligence::{
+    DisabledProvider, IncidentContext, IncidentExplanation, IncidentReasoner, ProviderDescriptor,
+    ReasoningProvider, ReasoningRequest, ReasoningResponse,
+};

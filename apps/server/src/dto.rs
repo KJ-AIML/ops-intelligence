@@ -4,6 +4,7 @@
 //! with the UI, and renaming a domain field should not silently break it.
 
 use chrono::{DateTime, Utc};
+use ops_core::domains::insights::Insight;
 use ops_core::insights::{IncidentSummary, OperationsSummary, RecurringPattern, SourceNoise};
 use ops_core::ports::{EvidenceEntry, IncidentWithEvidence};
 use ops_core::{Event, Source};
@@ -272,6 +273,51 @@ impl From<OperationsSummary> for SummaryResponse {
                 .map(SourceNoiseDto::from)
                 .collect(),
             recurring: s.recurring.iter().map(RecurringDto::from).collect(),
+        }
+    }
+}
+
+/// An insight is always labelled with who produced it and, for AI, exactly
+/// which model — a computed count and a model's interpretation must never look
+/// like the same class of claim (architecture 16).
+#[derive(Serialize)]
+pub struct InsightDto {
+    pub id: String,
+    pub incident_id: Option<String>,
+    pub insight_type: String,
+    pub source: String,
+    pub status: String,
+    pub title: String,
+    pub summary: Option<String>,
+    pub structured_payload: Option<serde_json::Value>,
+    pub schema_version: i32,
+    pub model: Option<String>,
+    pub provider: Option<String>,
+    pub prompt_version: Option<String>,
+    pub latency_ms: Option<u64>,
+    pub error: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<&Insight> for InsightDto {
+    fn from(i: &Insight) -> Self {
+        let ai = i.source == ops_core::InsightSource::Ai;
+        Self {
+            id: i.id.to_string(),
+            incident_id: i.incident_id.map(|x| x.to_string()),
+            insight_type: i.insight_type.to_string(),
+            source: i.source.to_string(),
+            status: i.status.to_string(),
+            title: i.title.clone(),
+            summary: i.summary.clone(),
+            structured_payload: i.structured_payload.clone(),
+            schema_version: i.schema_version,
+            model: ai.then(|| i.model_metadata.model.clone()),
+            provider: ai.then(|| i.model_metadata.provider.clone()),
+            prompt_version: ai.then(|| i.model_metadata.prompt_version.clone()),
+            latency_ms: ai.then_some(i.model_metadata.latency_ms),
+            error: i.error.clone(),
+            created_at: i.created_at,
         }
     }
 }

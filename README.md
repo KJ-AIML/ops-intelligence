@@ -19,7 +19,7 @@ Architecture is frozen at v0.1 — see `../../resources/operations-intelligence-
 | 3 | Deterministic correlation → Incidents | **implemented; acceptance checks below** |
 | 4 | Server: product API, Generic Webhook, deterministic insights | **done** |
 | 5 | Operations UI | **done** |
-| 6 | AI reasoner behind the port | not started |
+| 6 | AI reasoner behind the port | **done; off by default** |
 
 No vendor adapter (Grafana / Azure Monitor / Email) is written yet, and none will be until
 the real source inventory selects the top two — see
@@ -58,9 +58,12 @@ DEFAULT_ORGANIZATION_SLUG=pilot-org
 
 RUST_LOG=info,ops_worker=debug,sqlx=warn
 
-# AI stays off until the data boundary is agreed (source inventory 21).
-# The deterministic pipeline must work fully with AI disabled.
+# AI stays off until the pilot data boundary is agreed (source inventory 21).
+# With this unset or false, no key is read and nothing leaves the deployment.
 AI_ENABLED=false
+# AI_API_KEY=
+# AI_MODEL=claude-opus-5
+# AI_EFFORT=low
 ```
 
 The credentials above are local-development only and must not be reused anywhere else.
@@ -197,6 +200,42 @@ origin and there is no CORS or base-URL configuration to run the pilot locally.
 
 Colour carries meaning only for severity and status. There are no charts: v0.1
 prioritises lists, timelines and counts, per tech sheet 19.
+
+## Intelligence (optional, off by default)
+
+```sh
+cargo run -p ops-worker -- reason [limit]     # default limit 10
+```
+
+Generates one bounded explanation per incident that lacks one. **It does nothing
+unless `AI_ENABLED=true` and `AI_API_KEY` are set** — see
+[decision 0004](docs/decisions/0004-ai-disabled-by-default-anthropic-first-provider.md).
+Every deterministic number in the product is unaffected either way.
+
+What the model may see is one struct, `IncidentContext`: status, severity,
+family, environment/service/resource, durations, counts, recurrence, event
+**titles**, source names. **No raw payloads, no source messages, no log lines.**
+Anything not copied into that struct cannot reach a provider, and a test asserts
+it. That is what makes the source-inventory §21 boundary reviewable rather than
+aspirational.
+
+What comes back is schema-validated before it is stored: typed fields, a
+three-value `actionability` enum, length bounds, and a check that **any
+infrastructure identifier the model names appears in the supplied facts**. An
+invalid response is retried once, then recorded as `status='failed'` with the
+reason — raw model text is never persisted as a success. Failed attempts stay
+visible and retryable.
+
+AI never assigns an `event_family`, severity, status or fingerprint. Those are
+deterministic, and correlation does not consult a model.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/v1/incidents/{id}/insights` | interpretations for one incident |
+| GET | `/api/v1/insights` | recent interpretations |
+
+Swapping providers is one file implementing `ReasoningProvider`; nothing else
+changes.
 
 ## Checks
 

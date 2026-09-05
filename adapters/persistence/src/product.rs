@@ -25,6 +25,8 @@ use std::str::FromStr;
 /// An incident has no title column: the title is evidence, and belongs to the
 /// event that opened it. This keeps the incident row free of anything a source
 /// could later contradict.
+pub(crate) const INCIDENT_SELECT_PUB: &str = INCIDENT_SELECT;
+
 const INCIDENT_SELECT: &str = r#"
     SELECT i.id, i.status, i.severity, i.environment, i.service, i.resource,
            i.event_family, i.fingerprint, i.started_at, i.last_event_at,
@@ -50,6 +52,12 @@ const INCIDENT_SELECT: &str = r#"
       ) t ON TRUE
      WHERE i.organization_id = $1
 "#;
+
+pub(crate) fn incident_from_row_pub(
+    row: &sqlx::postgres::PgRow,
+) -> Result<IncidentSummary, DomainError> {
+    incident_from_row(row)
+}
 
 fn incident_from_row(row: &sqlx::postgres::PgRow) -> Result<IncidentSummary, DomainError> {
     let status: String = row.try_get("status").map_err(persistence)?;

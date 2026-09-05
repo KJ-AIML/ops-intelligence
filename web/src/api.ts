@@ -95,6 +95,29 @@ export interface EventRow {
   raw_signal_id: string;
 }
 
+export interface Insight {
+  id: string;
+  incident_id: string | null;
+  insight_type: string;
+  source: "deterministic" | "ai";
+  status: "ok" | "failed";
+  title: string;
+  summary: string | null;
+  structured_payload: {
+    actionability?: "act_now" | "review" | "informational";
+    explanation?: string;
+    likely_impact?: string;
+    suggested_check?: string;
+  } | null;
+  schema_version: number;
+  model: string | null;
+  provider: string | null;
+  prompt_version: string | null;
+  latency_ms: number | null;
+  error: string | null;
+  created_at: string;
+}
+
 export interface Source {
   id: string;
   name: string;
@@ -159,6 +182,8 @@ export const api = {
     const qs = query.toString();
     return request<EventRow[]>(`/events${qs ? `?${qs}` : ""}`);
   },
+
+  incidentInsights: (id: string) => request<Insight[]>(`/incidents/${id}/insights`),
 
   sources: () => request<Source[]>("/sources"),
 
