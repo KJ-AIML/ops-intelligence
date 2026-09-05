@@ -18,7 +18,7 @@ Architecture is frozen at v0.1 — see `../../resources/operations-intelligence-
 | 2 | Normalization → Events | **done; acceptance checks below** |
 | 3 | Deterministic correlation → Incidents | **implemented; acceptance checks below** |
 | 4 | Server: product API, Generic Webhook, deterministic insights | **done** |
-| 5 | Operations UI | in progress |
+| 5 | Operations UI | **done** |
 | 6 | AI reasoner behind the port | not started |
 
 No vendor adapter (Grafana / Azure Monitor / Email) is written yet, and none will be until
@@ -177,6 +177,26 @@ acknowledgement, because a repeat needs fresh eyes.
 unacknowledged beats acknowledged, critical beats warning, recurring beats
 one-off, and recency breaks ties. Every incident's `attention_score` is returned
 so the ordering can be checked rather than trusted.
+
+## Operations UI
+
+```sh
+cd web && npm install && npm run dev     # http://localhost:5173
+```
+
+The dev server proxies `/api` to the server on port 8080, so the browser sees one
+origin and there is no CORS or base-URL configuration to run the pilot locally.
+
+| Route | What it answers |
+|---|---|
+| `/` | What happened, what needs attention, what keeps happening, where the noise comes from |
+| `/incidents` | Filter by status and severity; sort by triage rank or recency |
+| `/incidents/{id}` | Summary, recurrence, and the full evidence timeline down to each original payload |
+| `/events` | Normalized event explorer — secondary, for debugging and trust |
+| `/sources` | Source list, enable/disable, and creating a webhook source |
+
+Colour carries meaning only for severity and status. There are no charts: v0.1
+prioritises lists, timelines and counts, per tech sheet 19.
 
 ## Checks
 
