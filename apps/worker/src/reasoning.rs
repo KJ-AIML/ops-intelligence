@@ -24,15 +24,36 @@ use std::time::Instant;
 /// the deployment until the pilot's data boundary is agreed
 /// (source inventory 21).
 pub fn provider_from_env() -> Box<dyn ReasoningProvider> {
-    match ops_ai_anthropic::AnthropicConfig::from_env() {
-        None => Box::new(DisabledProvider),
-        Some(config) => match ops_ai_anthropic::AnthropicProvider::new(config) {
-            Ok(provider) => Box::new(provider),
-            Err(e) => {
-                tracing::error!(error = %e, "AI is enabled but the provider could not be built; falling back to disabled");
-                Box::new(DisabledProvider)
+    // `local` keeps real incident context on this machine, which is what makes
+    // reasoning evaluable against real captured signals before the cloud data
+    // boundary is agreed (decision 0004, source inventory 21).
+    let kind = std::env::var("AI_PROVIDER").unwrap_or_else(|_| "anthropic".into());
+
+    let built: Option<Result<Box<dyn ReasoningProvider>, ops_core::DomainError>> =
+        match kind.to_ascii_lowercase().as_str() {
+            "local" | "openai_compatible" | "lmstudio" | "ollama" => {
+                ops_ai_local::LocalConfig::from_env().map(|c| {
+                    ops_ai_local::LocalProvider::new(c)
+                        .map(|p| Box::new(p) as Box<dyn ReasoningProvider>)
+                })
             }
-        },
+            "anthropic" => ops_ai_anthropic::AnthropicConfig::from_env().map(|c| {
+                ops_ai_anthropic::AnthropicProvider::new(c)
+                    .map(|p| Box::new(p) as Box<dyn ReasoningProvider>)
+            }),
+            other => {
+                tracing::error!(provider = %other, "unknown AI_PROVIDER; AI stays disabled");
+                None
+            }
+        };
+
+    match built {
+        None => Box::new(DisabledProvider),
+        Some(Ok(provider)) => provider,
+        Some(Err(e)) => {
+            tracing::error!(error = %e, "AI is enabled but the provider could not be built; falling back to disabled");
+            Box::new(DisabledProvider)
+        }
     }
 }
 

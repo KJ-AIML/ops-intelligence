@@ -7,6 +7,7 @@
 //! options grow beyond these positional arguments.
 
 mod normalizers;
+mod pilot;
 mod reasoning;
 
 use anyhow::{bail, Context, Result};
@@ -26,12 +27,18 @@ usage: ops-worker import <path-to-csv>
        ops-worker process
        ops-worker correlate
        ops-worker reason [limit]
+       ops-worker pilot dataset create <name> [source-name]
+       ops-worker pilot dataset list
+       ops-worker pilot replay <dataset> <run-label> [--ai]
+       ops-worker pilot compare <run-a> <run-b>
 
   import   Ingest a CSV/spreadsheet export as RawSignals (idempotent; safe to re-run).
   process  Normalize received RawSignals for the configured tenant, then exit.
   correlate Correlate normalized Events for the configured tenant, then exit.
   reason   Generate bounded AI explanations for incidents lacking one (default limit 10).
            Does nothing unless AI_ENABLED=true and AI_API_KEY is set.
+  pilot    Pilot Lab: freeze captured signals into a dataset, replay them through
+           the real pipeline in an isolated tenant, and compare two runs.
 ";
 
 #[tokio::main]
@@ -59,6 +66,7 @@ async fn main() -> Result<()> {
             };
             reason(limit).await
         }
+        Some("pilot") => pilot_command(&args).await,
         Some(other) => {
             eprint!("{USAGE}");
             bail!("unknown subcommand: {other}");
@@ -317,8 +325,68 @@ async fn reason(limit: i64) -> Result<()> {
     } else {
         // Deliberately not an error: the deterministic product is complete
         // without AI, and this is the default state (decision 0004).
-        println!("  AI is disabled — set AI_ENABLED=true and AI_API_KEY to generate insights.");
+        // Name both paths: the local one needs a model name, not a key, and
+        // sending someone to look for an API key they do not need wastes an
+        // afternoon.
+        println!("  AI is disabled. To enable it, set AI_ENABLED=true and either:");
+        println!("    local  AI_PROVIDER=local AI_MODEL=<model loaded in LM Studio / Ollama>");
+        println!("           (optional AI_BASE_URL, default http://127.0.0.1:1234/v1)");
+        println!("    cloud  AI_PROVIDER=anthropic AI_API_KEY=<key>");
         println!("  Everything else in the pipeline is unaffected.");
     }
     Ok(())
+}
+
+/// `pilot ...` — the Lab. Every path here goes through the real pipeline.
+async fn pilot_command(args: &[String]) -> Result<()> {
+    let (store, organization) = connect().await?;
+    match args.get(2).map(String::as_str) {
+        Some("dataset") => match args.get(3).map(String::as_str) {
+            Some("create") => {
+                let name = args.get(4).context("missing <name>")?;
+                pilot::create_dataset(
+                    &store,
+                    organization.id,
+                    name,
+                    args.get(5).map(String::as_str),
+                )
+                .await
+            }
+            Some("list") => pilot::list_datasets(&store, organization.id).await,
+            _ => {
+                eprint!("{USAGE}");
+                bail!("expected: pilot dataset create <name> | pilot dataset list");
+            }
+        },
+        Some("replay") => {
+            let dataset = args.get(3).context("missing <dataset>")?;
+            let label = args.get(4).context("missing <run-label>")?;
+            let with_ai = args.iter().any(|a| a == "--ai");
+            pilot::replay(&store, organization.id, dataset, label, with_ai).await
+        }
+        Some("compare") => {
+            let a = args.get(3).context("missing <run-a>")?;
+            let b = args.get(4).context("missing <run-b>")?;
+            pilot::compare_runs(&store, a, b).await
+        }
+        _ => {
+            eprint!("{USAGE}");
+            bail!("expected: pilot dataset|replay|compare");
+        }
+    }
+}
+
+/// Shared setup for the pilot commands.
+async fn connect() -> Result<(PgStore, ops_core::Organization)> {
+    let database_url =
+        std::env::var("DATABASE_URL").context("DATABASE_URL is not set; see README.md")?;
+    let org_slug =
+        std::env::var("DEFAULT_ORGANIZATION_SLUG").unwrap_or_else(|_| "pilot-org".into());
+    let pool = ops_persistence::connect(&database_url).await?;
+    ops_persistence::run_migrations(&pool).await?;
+    let store = PgStore::new(pool);
+    let organization = store
+        .ensure_by_slug(&org_slug, "Pilot Organization")
+        .await?;
+    Ok((store, organization))
 }

@@ -17,12 +17,15 @@ pub mod domains {
     pub mod incidents;
     pub mod insights;
     pub mod organizations;
+    pub mod pilot;
     pub mod raw_signals;
     pub mod sources;
 }
 
 pub use error::DomainError;
-pub use ids::{EventId, IncidentId, InsightId, OrganizationId, RawSignalId, SourceId};
+pub use ids::{
+    DatasetId, EventId, IncidentId, InsightId, OrganizationId, RawSignalId, RunId, SourceId,
+};
 pub use ports::{
     Clock, EventFilter, EventRepository, IncidentFilter, IncidentRepository, IncidentWithEvidence,
     InsertOutcome, InsightRepository, OrganizationRepository, ProductQueries, RawSignalRepository,
@@ -48,3 +51,5 @@ pub use intelligence::{
     DisabledProvider, IncidentContext, IncidentExplanation, IncidentReasoner, ProviderDescriptor,
     ReasoningProvider, ReasoningRequest, ReasoningResponse,
 };
+
+pub use domains::pilot::{compare, PilotDataset, PilotRun, RunStats, RunStatus, StatDelta};

@@ -26,6 +26,7 @@ use std::str::FromStr;
 mod events;
 mod incidents;
 mod insight_store;
+mod pilot_store;
 mod product;
 
 pub(crate) fn persistence(e: sqlx::Error) -> DomainError {

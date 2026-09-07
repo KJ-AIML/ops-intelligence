@@ -1051,6 +1051,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ops-ai-local"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "ops-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "ops-core"
 version = "0.1.0"
 dependencies = [
@@ -1129,6 +1142,7 @@ dependencies = [
  "chrono",
  "dotenvy",
  "ops-ai-anthropic",
+ "ops-ai-local",
  "ops-core",
  "ops-persistence",
  "ops-source-csv",

@@ -4,10 +4,12 @@ use crate::domains::incidents::IncidentStatus;
 use crate::domains::incidents::{Incident, IncidentEvent};
 use crate::domains::insights::Insight;
 use crate::domains::organizations::Organization;
+use crate::domains::pilot::{PilotDataset, PilotRun, RunStats};
 use crate::domains::raw_signals::ProcessingStatus;
 use crate::domains::raw_signals::RawSignal;
 use crate::domains::sources::{Source, SourceType};
 use crate::error::DomainError;
+use crate::ids::{DatasetId, RunId};
 use crate::ids::{IncidentId, OrganizationId, RawSignalId};
 
 use crate::insights::{IncidentSummary, OperationsSummary};
@@ -260,4 +262,65 @@ pub trait InsightRepository: Send + Sync {
         insight_type: crate::domains::insights::InsightType,
         limit: i64,
     ) -> Result<Vec<IncidentSummary>, DomainError>;
+}
+
+/// Pilot Lab: capture real signals into frozen datasets, then replay them.
+#[async_trait]
+pub trait PilotRepository: Send + Sync {
+    /// Freeze the captured signals matching the filter into a named dataset.
+    /// Membership is by reference — the dataset points at the original
+    /// evidence rather than copying it, so it can never drift from what was
+    /// actually received.
+    async fn create_dataset(
+        &self,
+        organization_id: OrganizationId,
+        name: &str,
+        description: Option<&str>,
+        source_name: Option<&str>,
+        at: DateTime<Utc>,
+    ) -> Result<PilotDataset, DomainError>;
+
+    async fn list_datasets(
+        &self,
+        organization_id: OrganizationId,
+    ) -> Result<Vec<PilotDataset>, DomainError>;
+
+    async fn find_dataset(
+        &self,
+        organization_id: OrganizationId,
+        name: &str,
+    ) -> Result<Option<PilotDataset>, DomainError>;
+
+    /// Start a run, provisioning the throwaway tenant it will replay into.
+    async fn start_run(
+        &self,
+        dataset_id: DatasetId,
+        label: &str,
+        engine_version: &str,
+        ai: Option<(&str, &str)>,
+        at: DateTime<Utc>,
+    ) -> Result<PilotRun, DomainError>;
+
+    /// Copy the dataset's signals into the run's tenant as fresh RawSignals.
+    /// Returns (replayed, suppressed).
+    async fn replay_signals_into_run(
+        &self,
+        run: &PilotRun,
+        at: DateTime<Utc>,
+    ) -> Result<(i64, i64), DomainError>;
+
+    async fn finish_run(
+        &self,
+        run_id: RunId,
+        stats: &RunStats,
+        error: Option<&str>,
+        at: DateTime<Utc>,
+    ) -> Result<(), DomainError>;
+
+    async fn collect_stats(&self, organization_id: OrganizationId)
+        -> Result<RunStats, DomainError>;
+
+    async fn list_runs(&self, dataset_id: DatasetId) -> Result<Vec<PilotRun>, DomainError>;
+
+    async fn find_run(&self, label: &str) -> Result<Option<PilotRun>, DomainError>;
 }

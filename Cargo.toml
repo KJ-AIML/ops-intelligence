@@ -6,6 +6,7 @@ members = [
     "adapters/sources/csv",
     "adapters/sources/webhook",
     "adapters/ai/anthropic",
+    "adapters/ai/openai_compatible",
     "apps/server",
     "apps/worker",
 ]
@@ -22,6 +23,7 @@ ops-persistence = { path = "adapters/persistence" }
 ops-source-csv = { path = "adapters/sources/csv" }
 ops-source-webhook = { path = "adapters/sources/webhook" }
 ops-ai-anthropic = { path = "adapters/ai/anthropic" }
+ops-ai-local = { path = "adapters/ai/openai_compatible" }
 
 anyhow = "1"
 axum = "0.8"

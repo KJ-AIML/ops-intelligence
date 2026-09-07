@@ -42,4 +42,6 @@ typed_id!(SourceId);
 typed_id!(RawSignalId);
 typed_id!(EventId);
 typed_id!(InsightId);
+typed_id!(DatasetId);
+typed_id!(RunId);
 typed_id!(IncidentId);

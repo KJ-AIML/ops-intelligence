@@ -20,6 +20,9 @@ Architecture is frozen at v0.1 — see `../../resources/operations-intelligence-
 | 4 | Server: product API, Generic Webhook, deterministic insights | **done** |
 | 5 | Operations UI | **done** |
 | 6 | AI reasoner behind the port | **done; off by default** |
+| P1 | Pilot Lab: capture, datasets, replay, compare | **done** |
+| P2 | Golden cases + human-reviewed regression | not started |
+| P4 | Shadow mode against live infrastructure | not started |
 
 No vendor adapter (Grafana / Azure Monitor / Email) is written yet, and none will be until
 the real source inventory selects the top two — see
@@ -236,6 +239,71 @@ deterministic, and correlation does not consult a model.
 
 Swapping providers is one file implementing `ReasoningProvider`; nothing else
 changes.
+
+## Pilot Lab
+
+The synthetic fixture proves the engine does what we designed. The Lab asks the
+different question: **does it do something useful to real traffic?**
+
+```sh
+# 1. CAPTURE — point Grafana / Azure at a webhook source and let signals arrive.
+#    No vendor adapter needed; the webhook endpoint already exists.
+
+# 2. Freeze what arrived into an immutable dataset
+cargo run -p ops-worker -- pilot dataset create infra-week-01 [source-name]
+cargo run -p ops-worker -- pilot dataset list
+
+# 3. REPLAY the same signals through the real pipeline, as often as you like
+cargo run -p ops-worker -- pilot replay infra-week-01 run-a
+cargo run -p ops-worker -- pilot replay infra-week-01 run-b --ai
+
+# 4. COMPARE two runs
+cargo run -p ops-worker -- pilot compare run-a run-b
+```
+
+**Each run gets its own tenant.** Ingestion is idempotent on
+`(source_id, external_id)`, so replaying into the capture tenant would insert
+nothing the second time. A fresh throwaway organization per run makes replay
+repeatable and reuses the tenant isolation the engine already enforces
+everywhere, instead of inventing a second isolation mechanism. Replay tenants
+are flagged `is_replay` so they are never mistaken for the real one.
+
+The capture tenant keeps the evidence and is never processed — replays are
+disposable, captures are not.
+
+A replay runs the **real** pipeline: the same normalizer, the same correlator,
+the same reasoner. If the Lab had its own copy it would be measuring the wrong
+engine.
+
+`compression` (events per incident) is reported next to correctness, never
+instead of it. A correlator that merges everything scores best on compression
+and is useless — which is exactly why `compare` says "fewer incidents is not
+automatically better".
+
+### Running a local model
+
+The pilot cannot send real incident context to a cloud provider until the
+source-inventory §21 boundary is agreed. A model on localhost has no boundary to
+cross, so reasoning can be evaluated against **real captured signals** now, and
+the cloud decision made later on evidence:
+
+```sh
+AI_ENABLED=true AI_PROVIDER=local AI_MODEL=<model loaded in LM Studio/Ollama>   cargo run -p ops-worker -- pilot replay infra-week-01 run-local --ai
+```
+
+`AI_BASE_URL` defaults to `http://127.0.0.1:1234/v1` (LM Studio); Ollama is
+`:11434/v1`, vLLM `:8000/v1`. Sampling is fixed at `temperature: 0` so two runs
+over one dataset stay comparable. It is the same `ReasoningProvider` port — the
+reasoner cannot tell local from cloud, which is the point of having the port.
+
+### Not built yet, deliberately
+
+**Golden cases (P2).** A dataset with human-approved expected groupings. The
+system proposes, the engineer corrects, and *that* becomes the oracle. A model
+must never write its own answer key.
+
+**Shadow mode (P4).** Needs real signals flowing alongside the existing
+workflow, which needs the design-partner interview first.
 
 ## Checks
 
