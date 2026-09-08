@@ -119,10 +119,22 @@ async fn main() -> Result<()> {
         // otherwise be silently capped back down to 2 MiB here. The layer
         // above is already the single source of truth for the ingest limit
         // (and the one `warn_on_oversized_body` reports), so disable this
-        // second, hidden one rather than keep two numbers in sync.
+        // second, hidden one rather than keep two numbers in sync. Both of
+        // these layers only wrap the routes already registered above them on
+        // this chain: a route added after this `.layer(...)` block falls back
+        // to axum's 2 MiB default with no `warn_on_oversized_body` coverage —
+        // watch for this when Task 5 adds static-file serving.
         .layer(axum::extract::DefaultBodyLimit::disable())
         .layer(middleware::from_fn(warn_on_oversized_body))
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|request: &Request| {
+                tracing::debug_span!(
+                    "request",
+                    method = %request.method(),
+                    route = %matched_route(request),
+                )
+            }),
+        )
         .layer(tower_http::cors::CorsLayer::permissive())
         .with_state(state);
 
@@ -134,6 +146,29 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Placeholder for a request axum's router never matched to a route (its
+/// built-in 404, since this router registers no fallback). `MatchedPath` is
+/// only ever absent in that case, so this should not be reachable in
+/// practice, but a placeholder is safer than a panic if it ever is.
+const UNMATCHED_ROUTE: &str = "unmatched";
+
+/// The route *pattern* a request matched, e.g.
+/// `/api/v1/ingest/webhook/{token}` — never the literal request path. For the
+/// ingest route the literal path IS the ingestion token: logging it verbatim
+/// would print a live write credential into every log sink at whatever level
+/// captures the event (README.md and webhook.rs both promise the token is
+/// never logged, at any level). `MatchedPath` is inserted into request
+/// extensions by axum's router during route matching, which happens before
+/// any `Router::layer` middleware runs — including both callers of this
+/// function below — so it is already present by the time either reads it.
+fn matched_route(request: &Request) -> &str {
+    request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(axum::extract::MatchedPath::as_str)
+        .unwrap_or(UNMATCHED_ROUTE)
+}
+
 /// `RequestBodyLimitLayer` turns an oversized body into a bare 413 before any
 /// handler runs, so the usual "reject and log" path in webhook.rs never fires
 /// for the largest refusals — exactly the ones an operator most needs to see
@@ -142,13 +177,15 @@ async fn main() -> Result<()> {
 /// default `info` filter a 413 here was otherwise silent. This wraps the
 /// whole router and promotes exactly that one case to a warning, naming the
 /// route and the configured limit; every other response passes through
-/// unchanged and unlogged.
+/// unchanged and unlogged. Logs the matched *pattern*, not the literal path —
+/// see `matched_route` — because the one route this warning exists to serve
+/// carries its ingestion token in the literal path.
 async fn warn_on_oversized_body(request: Request, next: Next) -> Response {
-    let path = request.uri().path().to_string();
+    let route = matched_route(&request).to_string();
     let response = next.run(request).await;
     if response.status() == StatusCode::PAYLOAD_TOO_LARGE {
         tracing::warn!(
-            route = %path,
+            route = %route,
             limit_bytes = MAX_BODY_BYTES,
             "request body exceeds the ingest limit"
         );
@@ -476,4 +513,89 @@ async fn list_insights(
         .list_recent(state.organization_id, q.limit.unwrap_or(DEFAULT_LIMIT))
         .await?;
     Ok(Json(insights.iter().map(dto::InsightDto::from).collect()))
+}
+
+// ------------------------------------------------------- body limit tests
+
+// Router-level regression pin for the gap between "MAX_BODY_BYTES says 4 MiB"
+// and "axum's `Json` extractor silently still caps at 2 MiB" (see the comment
+// on `DefaultBodyLimit::disable()` above). No database needed: a throwaway
+// route stands in for the real ingest route, wrapped in the same two layers
+// `main()` wires around the whole router. Without `DefaultBodyLimit::disable()`
+// the first test fails, because the request never gets past axum's hidden
+// default to reach the handler at all.
+#[cfg(test)]
+mod body_limit_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::extract::DefaultBodyLimit;
+    use axum::routing::post as route_post;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    fn probe_router() -> Router {
+        async fn accept(Json(_body): Json<serde_json::Value>) -> Json<serde_json::Value> {
+            Json(serde_json::json!({ "received": true }))
+        }
+
+        Router::new()
+            .route("/probe", route_post(accept))
+            .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
+            .layer(DefaultBodyLimit::disable())
+    }
+
+    /// A JSON body of at least `min_len` bytes. Exact length is a few bytes
+    /// over `min_len` (the `{"pad":"...."}` wrapper), which is irrelevant:
+    /// callers only need to land on the right side of a threshold, not hit
+    /// it exactly.
+    fn json_body_at_least(min_len: usize) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({ "pad": "x".repeat(min_len) })).unwrap()
+    }
+
+    fn post_probe(body: Vec<u8>) -> Request {
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/probe")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_body_between_axums_hidden_default_and_the_configured_limit_is_accepted() {
+        // 75% of MAX_BODY_BYTES: anchored to the constant, not a literal, so
+        // this tracks it if it ever changes. At today's 4 MiB that is 3 MiB —
+        // comfortably above axum's independent 2 MiB `Json` default and
+        // comfortably below MAX_BODY_BYTES.
+        let target = MAX_BODY_BYTES - MAX_BODY_BYTES / 4;
+        let body = json_body_at_least(target);
+        assert!(
+            body.len() > 2 * 1024 * 1024,
+            "test body ({} bytes) must exceed axum's independent 2 MiB Json \
+             default, or this test cannot exercise the regression it pins",
+            body.len()
+        );
+        assert!(body.len() < MAX_BODY_BYTES);
+
+        let response = probe_router().oneshot(post_probe(body)).await.unwrap();
+        assert_ne!(
+            response.status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "a body under MAX_BODY_BYTES must not be refused, even though it \
+             exceeds axum's hidden 2 MiB default"
+        );
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed["received"], true);
+    }
+
+    #[tokio::test]
+    async fn a_body_over_the_configured_limit_is_refused() {
+        let target = MAX_BODY_BYTES + MAX_BODY_BYTES / 4;
+        let body = json_body_at_least(target);
+        assert!(body.len() > MAX_BODY_BYTES);
+
+        let response = probe_router().oneshot(post_probe(body)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
 }
