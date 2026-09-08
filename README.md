@@ -80,23 +80,46 @@ The credentials above are local-development only and must not be reused anywhere
 ## Running it
 
 ```sh
-docker compose up -d                                    # PostgreSQL on :55432
+docker compose up -d postgres                            # PostgreSQL on :55432
 cargo run -p ops-worker -- import pilot-data/synthetic-alerts-v1.csv
 cargo run -p ops-worker -- process
 cargo run -p ops-worker -- correlate
 ```
 
+Start only the `postgres` service for this flow — the compose file's default `docker
+compose up -d` also starts `server`, which triggers the full release build and then
+binds `:8080` itself, colliding with `cargo run -p ops-server`.
+
 ### In Docker
 
 ```sh
-docker compose up -d --build            # PostgreSQL + server (API and UI) on :8080
+POSTGRES_PASSWORD=<pick-one> docker compose up -d --build   # PostgreSQL + server (API and UI) on :8080
 docker compose run --rm worker pilot dataset list
 ```
 
+On Windows PowerShell:
+
+```powershell
+$env:POSTGRES_PASSWORD = "<pick-one>"; docker compose up -d --build
+```
+
+Choose `POSTGRES_PASSWORD` before the *first* `up` — Postgres only applies it at
+`initdb`, when `ops-pgdata` is created. Once the volume exists, changing the variable
+only changes what `server`/`worker` try to connect with; the database's own password
+does not change, so `server` (which restarts `unless-stopped`) crash-loops instead of
+failing loudly. To rotate the password later, remove the `ops-pgdata` volume (destroys
+all data) or update it inside Postgres directly. Leaving `POSTGRES_PASSWORD` unset
+falls back to `ops_local_dev`, the same value documented above for local `cargo`
+runs — fine for a closed pilot box, but pick your own for anything reachable by more
+than one person.
+
 Set `API_BASE_URL` to the address Grafana will use (for example
 `http://10.0.0.12:8080`) before starting, because it is what the UI prints as the
-ingestion URL. The database port is bound to loopback only. The worker is a
-one-shot tool under the `tools` profile, not a daemon.
+ingestion URL. The database port is bound to loopback only; **port 8080 is not** — the
+API has no authentication, so anyone who can reach it can create ingestion sources or
+acknowledge/resolve incidents. Put 8080 on a trusted network segment (firewall, VPN, or
+an SSH tunnel from Grafana), not on the open internet. The worker is a one-shot tool
+under the `tools` profile, not a daemon.
 
 Migrations run automatically on startup, from an empty database upward.
 
