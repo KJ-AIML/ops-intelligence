@@ -169,6 +169,10 @@ RawSignal with the group context attached, and `fingerprint:status:startsAt` is 
 idempotency key, so Grafana's repeat notifications collapse while resolutions and
 re-fires do not.
 
+Grafana's rendered `message` digest is not stored; it is a rendering of `alerts[]`,
+which is stored in full. A group with more than 500 alerts, or one whose stored
+size would exceed 32 MiB, is refused and logged as `grafana batch rejected`.
+
 ```sh
 curl -X POST localhost:8080/api/v1/sources -H 'content-type: application/json' \
      -d '{"name":"grafana-live","source_type":"grafana"}'

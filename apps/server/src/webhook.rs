@@ -55,29 +55,56 @@ pub async fn ingest(
         return Err(DomainError::Validation("unknown or disabled ingestion token".into()).into());
     }
 
-    // Grafana reports how many alerts it dropped from a group. Nothing here can
-    // recover them, but their absence must not be silent (product principle P3).
-    let truncated = payload
-        .get("truncatedAlerts")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-
     // Validate before persisting so a malformed body is rejected at the door
     // rather than becoming a signal that can only ever fail normalization.
+    // Exhaustive on purpose: a new SourceType must pick a parser here or be
+    // refused here, and the compiler makes that choice mandatory.
     let (content_type, drafts): (&str, Vec<(Option<String>, Value)>) = match source.source_type {
-        SourceType::Grafana => (
-            ops_source_grafana::CONTENT_TYPE,
-            ops_source_grafana::split_batch(&payload)?
-                .into_iter()
-                .map(|alert| (Some(alert.external_id), alert.payload))
-                .collect(),
-        ),
-        _ => {
+        SourceType::Grafana => {
+            // Grafana reports how many alerts it dropped from a group. Nothing
+            // here can recover them, but their absence must not be silent
+            // (product principle P3).
+            let truncated = payload
+                .get("truncatedAlerts")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            if truncated > 0 {
+                tracing::warn!(
+                    source = %source.name,
+                    truncated,
+                    "grafana dropped alerts from this notification group"
+                );
+            }
+            // A refused batch is a whole notification group lost on our side.
+            // Grafana retries and then gives up, so the refusal is logged here,
+            // where the operator can see it, before it becomes a 400.
+            let alerts = ops_source_grafana::split_batch(&payload).map_err(|e| {
+                tracing::warn!(source = %source.name, error = %e, "grafana batch rejected");
+                e
+            })?;
+            (
+                ops_source_grafana::CONTENT_TYPE,
+                alerts
+                    .into_iter()
+                    .map(|alert| (Some(alert.external_id), alert.payload))
+                    .collect(),
+            )
+        }
+        SourceType::GenericWebhook => {
             ops_source_webhook::extract_facts(&payload)?;
             (
                 ops_source_webhook::CONTENT_TYPE,
                 vec![(ops_source_webhook::external_id_of(&payload), payload)],
             )
+        }
+        SourceType::CsvImport | SourceType::AzureMonitor | SourceType::Email => {
+            // Unreachable while the guard above holds; kept explicit so that
+            // adding a type to the guard without a parser fails to compile.
+            return Err(DomainError::Validation(format!(
+                "{} sources do not receive webhooks",
+                source.source_type
+            ))
+            .into());
         }
     };
 
@@ -107,13 +134,6 @@ pub async fn ingest(
         .store
         .touch_last_seen(source.organization_id, source.id, received_at)
         .await?;
-    if truncated > 0 {
-        tracing::warn!(
-            source = %source.name,
-            truncated,
-            "grafana dropped alerts from this notification group"
-        );
-    }
 
     // A redelivery is normal traffic, not an error: answer 200 so the sender
     // stops retrying, and say plainly that it was already known.

@@ -20,26 +20,21 @@ pub const ORIGIN: &str = "grafana";
 const ZERO_TIME: &str = "0001-01-01T00:00:00Z";
 
 // ponytail: deliberate bound, not derived from any Grafana limit. Grafana
-// groups alerts by folder/label before notifying, so a real notification
-// rarely carries more than a few dozen alerts even for a wide incident.
-// 500 is comfortably above any plausible real group while still bounding the
-// damage of `split_batch` cloning the group into every alert's payload: a
-// crafted body with a large group and many tiny alerts can otherwise turn one
-// bounded-size POST into hundreds of megabytes of stored payloads. Revisit
-// with real numbers once a design partner's Grafana is wired up (tech sheet
-// 35).
+// groups by alertname and folder by default, so a fleet-wide rule firing on
+// hundreds of hosts arrives as ONE group; 500 is above any fleet a one-to-three
+// person infra team runs while still bounding how many payloads one POST can
+// become. Revisit with real numbers once a design partner's Grafana is wired
+// up (tech sheet 35).
 const MAX_ALERTS_PER_BATCH: usize = 500;
 
 // `split_batch` clones the group into every alert's payload, so the count cap
-// above bounds *how many* clones happen but not their combined size: a body
-// that spends nearly all of `MAX_BODY_BYTES` on one huge group field and the
-// rest on hundreds of near-empty alerts still multiplies that huge group by
-// the alert count. A real Grafana notification group (labels, annotations, a
-// handful of URLs) is a few KB at most, so even a full-cap batch of 500 alerts
-// realistically multiplies out to a few MB. 32 MiB leaves an order of
-// magnitude of headroom above that realistic case while sitting far below the
-// ~500 MB a group-heavy adversarial body can otherwise produce from one
-// MAX_BODY_BYTES-sized request.
+// above bounds how many clones happen but not their combined size. With the
+// rendered `message` digest excluded, a real group is labels, annotations, a
+// title and a few URLs: a few KB regardless of alert count, so a full-cap
+// batch multiplies out to a few MB. 32 MiB is a safety net for bodies that are
+// not shaped like Grafana's, not a limit a real notification should ever meet.
+// If the server log ever shows "grafana batch rejected" for a real group, the
+// model above is wrong and this needs real numbers, not a bigger constant.
 const MAX_BATCH_EXPANSION_BYTES: usize = 32 * 1024 * 1024;
 
 /// One alert lifted out of a Grafana notification batch, ready to become a RawSignal.
@@ -49,7 +44,7 @@ pub struct AlertSignal {
     /// notifications of one firing alert; distinct for its resolution and for
     /// a later re-fire.
     pub external_id: String,
-    /// `{ "alert": <alert object>, "group": <every top-level field except alerts> }`.
+    /// `{ "alert": <alert object>, "group": <every top-level field except alerts and message> }`.
     pub payload: Value,
 }
 
@@ -72,10 +67,14 @@ pub fn split_batch(body: &Value) -> Result<Vec<AlertSignal>, DomainError> {
         )));
     }
     // Everything Grafana said about the group travels with each alert, so the
-    // stored evidence is complete without the other alerts in the batch.
+    // stored evidence is complete without the other alerts in the batch. The
+    // one exception is `message`: Grafana renders every alert of the batch
+    // into it, so it grows with the alert count and is fully derivable from
+    // `alerts`. Duplicating it into each alert would make storage quadratic in
+    // the group size for no evidence gain.
     let group: Map<String, Value> = object
         .iter()
-        .filter(|(key, _)| key.as_str() != "alerts")
+        .filter(|(key, _)| !matches!(key.as_str(), "alerts" | "message"))
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
 
@@ -453,5 +452,32 @@ mod tests {
         // the budget.
         let realistic = batch_with_padded_group(MAX_ALERTS_PER_BATCH, 2_000);
         assert!(split_batch(&realistic).is_ok());
+    }
+
+    #[test]
+    fn the_rendered_digest_is_not_duplicated_into_every_alert() {
+        let mut body = batch();
+        body["message"] = json!("x".repeat(600 * MAX_ALERTS_PER_BATCH));
+        for signal in split_batch(&body).unwrap() {
+            assert!(
+                signal.payload["group"].get("message").is_none(),
+                "message is a rendering of alerts[], not evidence"
+            );
+            assert_eq!(
+                signal.payload["group"]["title"],
+                "[FIRING:2]  (payments production)"
+            );
+        }
+    }
+
+    #[test]
+    fn a_full_cap_batch_with_a_grafana_sized_digest_is_accepted() {
+        // Grafana's default template renders roughly 600 bytes per alert into
+        // `message`, so a 500-alert group carries a digest of about 300 KB.
+        // Multiplied across 500 alerts that would be 150 MB; it must not trip
+        // the budget, because the digest is not stored.
+        let mut body = batch_of(MAX_ALERTS_PER_BATCH);
+        body["message"] = json!("x".repeat(600 * MAX_ALERTS_PER_BATCH));
+        assert!(split_batch(&body).is_ok());
     }
 }
