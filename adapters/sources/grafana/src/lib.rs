@@ -19,6 +19,17 @@ pub const ORIGIN: &str = "grafana";
 /// Grafana's "this alert has not ended" sentinel.
 const ZERO_TIME: &str = "0001-01-01T00:00:00Z";
 
+// ponytail: deliberate bound, not derived from any Grafana limit. Grafana
+// groups alerts by folder/label before notifying, so a real notification
+// rarely carries more than a few dozen alerts even for a wide incident.
+// 500 is comfortably above any plausible real group while still bounding the
+// damage of `split_batch` cloning the group into every alert's payload: a
+// crafted body with a large group and many tiny alerts can otherwise turn one
+// bounded-size POST into hundreds of megabytes of stored payloads. Revisit
+// with real numbers once a design partner's Grafana is wired up (tech sheet
+// 35).
+const MAX_ALERTS_PER_BATCH: usize = 500;
+
 /// One alert lifted out of a Grafana notification batch, ready to become a RawSignal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AlertSignal {
@@ -42,6 +53,12 @@ pub fn split_batch(body: &Value) -> Result<Vec<AlertSignal>, DomainError> {
             ))
         }
     };
+    if alerts.len() > MAX_ALERTS_PER_BATCH {
+        return Err(DomainError::Validation(format!(
+            "grafana payload carries {} alerts, exceeding the cap of {MAX_ALERTS_PER_BATCH}",
+            alerts.len()
+        )));
+    }
     // Everything Grafana said about the group travels with each alert, so the
     // stored evidence is complete without the other alerts in the batch.
     let group: Map<String, Value> = object
@@ -343,5 +360,40 @@ mod tests {
         let signal = split_batch(&bad_time).unwrap().remove(0);
         let err = extract_facts(&signal.payload).unwrap_err().to_string();
         assert!(err.contains("RFC3339"), "got: {err}");
+    }
+
+    /// A minimal batch with `n` distinct, individually-valid alerts, used only
+    /// to probe the `MAX_ALERTS_PER_BATCH` cap.
+    fn batch_of(n: usize) -> Value {
+        let alerts: Vec<Value> = (0..n)
+            .map(|i| {
+                json!({
+                    "status": "firing",
+                    "labels": { "alertname": "Probe" },
+                    "startsAt": "2026-09-08T09:42:10Z",
+                    "endsAt": "0001-01-01T00:00:00Z",
+                    "fingerprint": format!("fp-{i}"),
+                })
+            })
+            .collect();
+        json!({ "receiver": "ops-intelligence", "alerts": alerts })
+    }
+
+    #[test]
+    fn a_batch_at_the_cap_is_accepted_but_one_over_is_rejected() {
+        let at_cap = split_batch(&batch_of(MAX_ALERTS_PER_BATCH));
+        assert!(at_cap.is_ok(), "{at_cap:?}");
+        assert_eq!(at_cap.unwrap().len(), MAX_ALERTS_PER_BATCH);
+
+        let err = split_batch(&batch_of(MAX_ALERTS_PER_BATCH + 1)).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains(&(MAX_ALERTS_PER_BATCH + 1).to_string()),
+            "got: {message}"
+        );
+        assert!(
+            message.contains(&MAX_ALERTS_PER_BATCH.to_string()),
+            "got: {message}"
+        );
     }
 }
