@@ -161,6 +161,24 @@ RawSignal and returns immediately — `202` for a new signal, `200` with
 and correlation happen in the worker, so a slow pipeline can never make a
 source's alert delivery time out.
 
+### Grafana
+
+A source of type `grafana` accepts Grafana Alerting's native webhook contact-point
+payload. One POST carries a notification group; every alert in it becomes its own
+RawSignal with the group context attached, and `fingerprint:status:startsAt` is the
+idempotency key, so Grafana's repeat notifications collapse while resolutions and
+re-fires do not.
+
+```sh
+curl -X POST localhost:8080/api/v1/sources -H 'content-type: application/json' \
+     -d '{"name":"grafana-live","source_type":"grafana"}'
+```
+
+Point a Grafana Webhook contact point at the returned `ingest_url` (method POST).
+The response reports `inserted` and `duplicates` per batch. The fixture in
+`adapters/sources/grafana/tests/fixtures/` is written from Grafana's documented
+format; replace it with a real payload from the pilot environment when one exists.
+
 ### Incident lifecycle
 
 ```

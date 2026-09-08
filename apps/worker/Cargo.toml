@@ -14,6 +14,7 @@ ops-core.workspace = true
 ops-persistence.workspace = true
 ops-source-csv.workspace = true
 ops-source-webhook.workspace = true
+ops-source-grafana.workspace = true
 ops-ai-anthropic.workspace = true
 ops-ai-local.workspace = true
 

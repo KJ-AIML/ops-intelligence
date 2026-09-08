@@ -19,6 +19,7 @@ use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use ops_core::domains::events::Severity;
 use ops_core::domains::incidents::IncidentStatus;
+use ops_core::domains::sources::SourceType;
 use ops_core::ids::{IncidentId, OrganizationId, SourceId};
 use ops_core::ports::{
     EventFilter, IncidentFilter, InsightRepository, ProductQueries, SourceRepository,
@@ -32,9 +33,10 @@ use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
 const DEFAULT_LIMIT: i64 = 100;
-/// Alert payloads are small. A cap keeps a misconfigured source from exhausting
-/// memory (tech sheet 21).
-const MAX_BODY_BYTES: usize = 256 * 1024;
+/// Alert payloads are small, but Grafana posts one body per notification group
+/// and a large group with values and annotations can pass 256 KiB. A cap still
+/// keeps a misconfigured source from exhausting memory (tech sheet 21).
+const MAX_BODY_BYTES: usize = 1024 * 1024;
 /// Upper bound on the set considered when ranking by attention. Matches the
 /// repository's own hard LIMIT clamp.
 const MAX_RANKING_CANDIDATES: i64 = 500;
@@ -338,9 +340,12 @@ async fn list_sources(State(state): State<AppState>) -> ApiResult<Json<Vec<dto::
 #[derive(Deserialize)]
 struct CreateSource {
     name: String,
+    /// `generic_webhook` (default) or `grafana`.
+    #[serde(default)]
+    source_type: Option<String>,
 }
 
-/// Creates a Generic Webhook source. The token is generated server-side and
+/// Creates a webhook-fed source. The token is generated server-side and
 /// returned exactly once — it is not readable from any later request.
 async fn create_source(
     State(state): State<AppState>,
@@ -350,10 +355,28 @@ async fn create_source(
     if name.is_empty() {
         return Err(DomainError::Validation("source name is required".into()).into());
     }
+    let source_type = match body
+        .source_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        None => SourceType::GenericWebhook,
+        Some(s) => SourceType::from_str(s)?,
+    };
+    if !matches!(
+        source_type,
+        SourceType::GenericWebhook | SourceType::Grafana
+    ) {
+        return Err(DomainError::Validation(format!(
+            "{source_type} sources do not receive webhooks; use generic_webhook or grafana"
+        ))
+        .into());
+    }
     let token = webhook::generate_token();
     let source = state
         .store
-        .create_webhook(state.organization_id, name, &token)
+        .create_webhook(state.organization_id, source_type, name, &token)
         .await?;
 
     let response = dto::CreatedSourceDto {

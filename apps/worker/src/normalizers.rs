@@ -1,8 +1,8 @@
 //! Source-type dispatch.
 //!
-//! The one place that knows which adapter handles which source. Adding Grafana
-//! or Azure Monitor later means one new arm here and one new adapter crate —
-//! nothing downstream of `RawSignal` changes, which is the whole point of the
+//! The one place that knows which adapter handles which source. Adding Azure
+//! Monitor later means one new arm here and one new adapter crate — nothing
+//! downstream of `RawSignal` changes, which is the whole point of the
 //! ports-and-adapters boundary (architecture 7).
 
 use chrono::{DateTime, Utc};
@@ -24,6 +24,9 @@ impl SignalNormalizer for DispatchingNormalizer {
             }
             SourceType::GenericWebhook => {
                 ops_source_webhook::WebhookNormalizer.normalize(raw, source_type, created_at)
+            }
+            SourceType::Grafana => {
+                ops_source_grafana::GrafanaNormalizer.normalize(raw, source_type, created_at)
             }
             // Not a panic and not a silent skip: the signal is recorded as
             // failed with this reason, so it stays visible and replayable once

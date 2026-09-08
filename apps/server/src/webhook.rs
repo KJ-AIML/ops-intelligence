@@ -31,6 +31,10 @@ pub fn generate_token() -> String {
 /// The token identifies both the source AND the tenant. Nothing in the request
 /// body selects an organization, so a leaked payload cannot cross a tenant
 /// boundary (tech sheet 20).
+///
+/// A Generic Webhook body is one signal. A Grafana body is one notification
+/// group carrying several alerts; each alert becomes its own RawSignal so the
+/// evidence unit stays "one alert", and the group context travels with it.
 pub async fn ingest(
     State(state): State<AppState>,
     Path(token): Path<String>,
@@ -42,42 +46,92 @@ pub async fn ingest(
     let Some(source) = state.store.find_by_ingest_token(&token).await? else {
         return Err(DomainError::Validation("unknown or disabled ingestion token".into()).into());
     };
-    if !source.enabled || source.source_type != SourceType::GenericWebhook {
+    if !source.enabled
+        || !matches!(
+            source.source_type,
+            SourceType::GenericWebhook | SourceType::Grafana
+        )
+    {
         return Err(DomainError::Validation("unknown or disabled ingestion token".into()).into());
     }
 
+    // Grafana reports how many alerts it dropped from a group. Nothing here can
+    // recover them, but their absence must not be silent (product principle P3).
+    let truncated = payload
+        .get("truncatedAlerts")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+
     // Validate before persisting so a malformed body is rejected at the door
     // rather than becoming a signal that can only ever fail normalization.
-    ops_source_webhook::extract_facts(&payload)?;
+    let (content_type, drafts): (&str, Vec<(Option<String>, Value)>) = match source.source_type {
+        SourceType::Grafana => (
+            ops_source_grafana::CONTENT_TYPE,
+            ops_source_grafana::split_batch(&payload)?
+                .into_iter()
+                .map(|alert| (Some(alert.external_id), alert.payload))
+                .collect(),
+        ),
+        _ => {
+            ops_source_webhook::extract_facts(&payload)?;
+            (
+                ops_source_webhook::CONTENT_TYPE,
+                vec![(ops_source_webhook::external_id_of(&payload), payload)],
+            )
+        }
+    };
 
     let received_at = state.clock.now();
-    let signal = RawSignal::received(
-        source.organization_id,
-        source.id,
-        ops_source_webhook::external_id_of(&payload),
-        ops_source_webhook::CONTENT_TYPE,
-        payload,
-        received_at,
-    );
-
-    let outcome = state.store.insert_if_new(&signal).await?;
+    let (mut inserted, mut duplicates) = (0usize, 0usize);
+    let mut first_id = None;
+    for (external_id, body) in drafts {
+        let signal = RawSignal::received(
+            source.organization_id,
+            source.id,
+            external_id,
+            content_type,
+            body,
+            received_at,
+        );
+        match state.store.insert_if_new(&signal).await? {
+            InsertOutcome::Inserted(id) => {
+                inserted += 1;
+                if first_id.is_none() {
+                    first_id = Some(id);
+                }
+            }
+            InsertOutcome::Duplicate => duplicates += 1,
+        }
+    }
     state
         .store
         .touch_last_seen(source.organization_id, source.id, received_at)
         .await?;
+    if truncated > 0 {
+        tracing::warn!(
+            source = %source.name,
+            truncated,
+            "grafana dropped alerts from this notification group"
+        );
+    }
 
     // A redelivery is normal traffic, not an error: answer 200 so the sender
     // stops retrying, and say plainly that it was already known.
-    Ok(match outcome {
-        InsertOutcome::Inserted(id) => (
-            StatusCode::ACCEPTED,
-            Json(serde_json::json!({ "accepted": true, "signal_id": id.to_string() })),
-        ),
-        InsertOutcome::Duplicate => (
-            StatusCode::OK,
-            Json(serde_json::json!({ "accepted": true, "duplicate": true })),
-        ),
-    })
+    let status = if inserted > 0 {
+        StatusCode::ACCEPTED
+    } else {
+        StatusCode::OK
+    };
+    Ok((
+        status,
+        Json(serde_json::json!({
+            "accepted": true,
+            "inserted": inserted,
+            "duplicates": duplicates,
+            "duplicate": inserted == 0,
+            "signal_id": first_id.map(|id| id.to_string()),
+        })),
+    ))
 }
 
 #[cfg(test)]

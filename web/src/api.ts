@@ -4,6 +4,7 @@
 
 export type IncidentStatus = "open" | "acknowledged" | "recovered" | "resolved";
 export type Severity = "debug" | "info" | "warning" | "critical";
+export type WebhookSourceType = "generic_webhook" | "grafana";
 
 export interface SourceNoise {
   source_id: string;
@@ -187,10 +188,10 @@ export const api = {
 
   sources: () => request<Source[]>("/sources"),
 
-  createSource: (name: string) =>
+  createSource: (name: string, sourceType: WebhookSourceType) =>
     request<CreatedSource>("/sources", {
       method: "POST",
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, source_type: sourceType }),
     }),
 
   setSourceEnabled: (id: string, enabled: boolean) =>

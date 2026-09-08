@@ -68,12 +68,14 @@ pub trait SourceRepository: Send + Sync {
         organization_id: OrganizationId,
     ) -> Result<Vec<Source>, DomainError>;
 
-    /// Create a webhook source and return it together with its freshly minted
-    /// token. The token is returned exactly once, here; it is never readable
-    /// again from a list or detail endpoint.
+    /// Create a webhook-fed source (`GenericWebhook` or `Grafana`) and return
+    /// it together with its freshly minted token. The token is returned
+    /// exactly once, here; it is never readable again from a list or detail
+    /// endpoint.
     async fn create_webhook(
         &self,
         organization_id: OrganizationId,
+        source_type: SourceType,
         name: &str,
         token: &str,
     ) -> Result<Source, DomainError>;

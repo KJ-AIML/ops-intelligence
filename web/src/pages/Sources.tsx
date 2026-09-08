@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, formatTime } from "../api";
-import type { CreatedSource } from "../api";
+import type { CreatedSource, WebhookSourceType } from "../api";
 import { Empty, ErrorNotice, Loading } from "../components";
 
 export default function Sources() {
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
+  const [sourceType, setSourceType] = useState<WebhookSourceType>("grafana");
   const [created, setCreated] = useState<CreatedSource | null>(null);
 
   const sources = useQuery({ queryKey: ["sources"], queryFn: api.sources });
@@ -14,7 +15,8 @@ export default function Sources() {
   const refresh = () => void queryClient.invalidateQueries({ queryKey: ["sources"] });
 
   const create = useMutation({
-    mutationFn: (n: string) => api.createSource(n),
+    mutationFn: (input: { name: string; sourceType: WebhookSourceType }) =>
+      api.createSource(input.name, input.sourceType),
     onSuccess: (source) => {
       // The token is readable exactly once, right here. Hold it in component
       // state so the engineer can copy it before it becomes unrecoverable.
@@ -23,6 +25,7 @@ export default function Sources() {
       refresh();
     },
   });
+  const submit = () => create.mutate({ name: name.trim(), sourceType });
 
   const toggle = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
@@ -39,20 +42,23 @@ export default function Sources() {
       </p>
 
       <div className="toolbar">
+        <select
+          value={sourceType}
+          onChange={(e) => setSourceType(e.target.value as WebhookSourceType)}
+        >
+          <option value="grafana">Grafana contact point</option>
+          <option value="generic_webhook">Generic webhook</option>
+        </select>
         <input
-          placeholder="new webhook source name"
+          placeholder="new source name"
           value={name}
           onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && name.trim()) create.mutate(name.trim());
+            if (e.key === "Enter" && name.trim()) submit();
           }}
         />
-        <button
-          className="primary"
-          onClick={() => create.mutate(name.trim())}
-          disabled={!name.trim() || create.isPending}
-        >
-          Add webhook source
+        <button className="primary" onClick={submit} disabled={!name.trim() || create.isPending}>
+          Add source
         </button>
       </div>
 
@@ -65,6 +71,14 @@ export default function Sources() {
             Copy this now. The token is shown once and is not recoverable afterwards — it is the
             source's credential and identifies the tenant.
           </p>
+          {created.source_type === "grafana" && (
+            <p className="small muted">
+              In Grafana: Alerting → Contact points → New → integration "Webhook" → this URL,
+              HTTP method POST. Route alerts to it with a nested notification policy that
+              continues matching, so existing notifications keep flowing. Step by step in
+              docs/pilot-runbook.md.
+            </p>
+          )}
           <pre>{created.ingest_url}</pre>
           <div className="toolbar" style={{ marginTop: 12, marginBottom: 0 }}>
             <button onClick={() => void navigator.clipboard?.writeText(created.ingest_url)}>

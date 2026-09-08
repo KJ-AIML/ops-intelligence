@@ -13,6 +13,7 @@ path = "src/main.rs"
 ops-core.workspace = true
 ops-persistence.workspace = true
 ops-source-webhook.workspace = true
+ops-source-grafana.workspace = true
 
 anyhow.workspace = true
 axum.workspace = true

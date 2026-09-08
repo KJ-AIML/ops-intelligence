@@ -168,6 +168,7 @@ impl SourceRepository for PgStore {
     async fn create_webhook(
         &self,
         organization_id: OrganizationId,
+        source_type: SourceType,
         name: &str,
         token: &str,
     ) -> Result<Source, DomainError> {
@@ -175,11 +176,12 @@ impl SourceRepository for PgStore {
         // make the caller believe the token it just generated is live.
         let row = sqlx::query(&format!(
             "INSERT INTO sources (id, organization_id, source_type, name, ingest_token)
-             VALUES ($1, $2, 'generic_webhook', $3, $4)
+             VALUES ($1, $2, $3, $4, $5)
              RETURNING {SOURCE_COLUMNS}"
         ))
         .bind(SourceId::new().as_uuid())
         .bind(organization_id.as_uuid())
+        .bind(source_type.as_str())
         .bind(name)
         .bind(token)
         .fetch_one(&self.pool)
