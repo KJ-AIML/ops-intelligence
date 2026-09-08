@@ -269,7 +269,10 @@ everywhere, instead of inventing a second isolation mechanism. Replay tenants
 are flagged `is_replay` so they are never mistaken for the real one.
 
 The capture tenant keeps the evidence and is never processed — replays are
-disposable, captures are not.
+disposable, captures are not. Both properties are asserted by
+`adapters/persistence/tests/pilot_replay.rs`: two replays of one frozen dataset
+produce identical statistics, and the capture tenant ends with 0 events and
+0 incidents.
 
 A replay runs the **real** pipeline: the same normalizer, the same correlator,
 the same reasoner. If the Lab had its own copy it would be measuring the wrong
