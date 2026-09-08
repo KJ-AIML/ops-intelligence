@@ -1125,6 +1125,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ops-source-grafana"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "ops-core",
+ "serde_json",
+]
+
+[[package]]
 name = "ops-source-webhook"
 version = "0.1.0"
 dependencies = [

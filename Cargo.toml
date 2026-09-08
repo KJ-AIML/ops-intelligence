@@ -5,6 +5,7 @@ members = [
     "adapters/persistence",
     "adapters/sources/csv",
     "adapters/sources/webhook",
+    "adapters/sources/grafana",
     "adapters/ai/anthropic",
     "adapters/ai/openai_compatible",
     "apps/server",
@@ -22,6 +23,7 @@ ops-core = { path = "crates/core" }
 ops-persistence = { path = "adapters/persistence" }
 ops-source-csv = { path = "adapters/sources/csv" }
 ops-source-webhook = { path = "adapters/sources/webhook" }
+ops-source-grafana = { path = "adapters/sources/grafana" }
 ops-ai-anthropic = { path = "adapters/ai/anthropic" }
 ops-ai-local = { path = "adapters/ai/openai_compatible" }
 

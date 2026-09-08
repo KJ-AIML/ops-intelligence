@@ -1,0 +1,60 @@
+{
+  "receiver": "ops-intelligence",
+  "status": "firing",
+  "orgId": 1,
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "HighAPILatency",
+        "grafana_folder": "payments",
+        "severity": "warning",
+        "service": "payment-api",
+        "instance": "api-prod-01",
+        "environment": "production"
+      },
+      "annotations": {
+        "summary": "p95 latency above 800ms on payment-api",
+        "description": "p95 latency has been above 800ms for 5 minutes"
+      },
+      "startsAt": "2026-09-08T09:42:10Z",
+      "endsAt": "0001-01-01T00:00:00Z",
+      "generatorURL": "https://grafana.example.internal/alerting/grafana/abc123/view",
+      "fingerprint": "3f2a9c1d8e7b6a50",
+      "silenceURL": "https://grafana.example.internal/alerting/silence/new?alertmanager=grafana",
+      "dashboardURL": "",
+      "panelURL": "",
+      "values": { "B": 912.4 },
+      "valueString": "[ var='B' labels={} value=912.4 ]"
+    },
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "DiskAlmostFull",
+        "grafana_folder": "infra",
+        "severity": "critical",
+        "instance": "db-prod-02",
+        "environment": "production"
+      },
+      "annotations": {
+        "summary": "Disk usage above 90% on db-prod-02"
+      },
+      "startsAt": "2026-09-08T09:40:00Z",
+      "endsAt": "0001-01-01T00:00:00Z",
+      "generatorURL": "https://grafana.example.internal/alerting/grafana/def456/view",
+      "fingerprint": "9b8c7d6e5f4a3210",
+      "values": { "B": 91.7 },
+      "valueString": "[ var='B' labels={} value=91.7 ]"
+    }
+  ],
+  "groupLabels": { "grafana_folder": "payments" },
+  "commonLabels": { "environment": "production" },
+  "commonAnnotations": {},
+  "externalURL": "https://grafana.example.internal/",
+  "version": "1",
+  "groupKey": "{}:{grafana_folder=\"payments\"}",
+  "truncatedAlerts": 0,
+  "title": "[FIRING:2]  (payments production)",
+  "state": "alerting",
+  "message": "**Firing**\n\nValue: B=912.4\nLabels:\n - alertname = HighAPILatency\n"
+}
