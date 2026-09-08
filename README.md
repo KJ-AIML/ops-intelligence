@@ -169,12 +169,30 @@ RawSignal with the group context attached, and `fingerprint:status:startsAt` is 
 idempotency key, so Grafana's repeat notifications collapse while resolutions and
 re-fires do not.
 
-Grafana's rendered `message` digest is not stored; it is a rendering of `alerts[]`,
-which is stored in full. There is no alert-count cap: the 1 MiB request body limit
-bounds a batch, and a fleet-wide outage must arrive whole. A batch whose group
-context multiplied across its alerts would pass 32 MiB is refused with a 400 and
-logged as `grafana batch rejected`; Grafana retries a few times and then discards
-the notification, so that log line means a group was lost.
+Grafana's rendered `message` digest is not stored — it is a rendering of
+`alerts[]`, which is stored in full — but Grafana sends it in the same POST, so it
+still counts against the 1 MiB request body limit on the way in. There is no
+alert-count cap in this crate: removing it raised the ceiling on one notification
+group from a hard 500 to roughly 540-815 alerts, depending on alert size (measured
+against the fixture's ~685 B slim alert: ~815 alerts with Grafana's ~600 B/alert
+digest included, ~540 at a fatter ~1,339 B alert shape). That is not a guarantee a
+fleet-wide outage always arrives whole. Above the ceiling the request is refused
+whole by the 1 MiB body limit with a 413, logged as `request body exceeds the
+ingest limit`; Grafana retries a few times and then discards the notification, so
+that log line means a group was lost.
+
+A batch whose group context multiplied across its alerts would separately exceed
+32 MiB is refused with a 400 and logged as `grafana batch rejected`; at realistic
+Grafana payload shapes this is unreachable and exists only as a safety net.
+
+For a fleet larger than the body-limit ceiling, set `maxAlerts` on the Grafana
+contact point below that ceiling. Grafana then truncates the group itself before
+sending it, instead of the whole POST being refused — and truncation is the case
+this engine handles well: it is warn-logged
+(`grafana dropped alerts from this notification group`), and the
+`truncatedAlerts` count is preserved into every stored alert's group context
+(pinned by a test), so the loss is visible and bounded instead of silent and
+total.
 
 ```sh
 curl -X POST localhost:8080/api/v1/sources -H 'content-type: application/json' \

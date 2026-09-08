@@ -11,8 +11,9 @@ mod dto;
 mod webhook;
 
 use anyhow::{Context, Result};
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::StatusCode;
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
@@ -108,6 +109,7 @@ async fn main() -> Result<()> {
         .route("/api/v1/sources/{id}", patch(update_source))
         .route("/api/v1/ingest/webhook/{token}", post(webhook::ingest))
         .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
+        .layer(middleware::from_fn(warn_on_oversized_body))
         .layer(TraceLayer::new_for_http())
         .layer(tower_http::cors::CorsLayer::permissive())
         .with_state(state);
@@ -118,6 +120,28 @@ async fn main() -> Result<()> {
     tracing::info!(%host, port, organization = %organization.slug, "server listening");
     axum::serve(listener, app).await.context("serving")?;
     Ok(())
+}
+
+/// `RequestBodyLimitLayer` turns an oversized body into a bare 413 before any
+/// handler runs, so the usual "reject and log" path in webhook.rs never fires
+/// for the largest refusals — exactly the ones an operator most needs to see
+/// (tech sheet 21, Task 3c fix round 1). `TraceLayer`'s default classifier
+/// only treats 5xx as a failure and logs 2xx/4xx responses at DEBUG, so at the
+/// default `info` filter a 413 here was otherwise silent. This wraps the
+/// whole router and promotes exactly that one case to a warning, naming the
+/// route and the configured limit; every other response passes through
+/// unchanged and unlogged.
+async fn warn_on_oversized_body(request: Request, next: Next) -> Response {
+    let path = request.uri().path().to_string();
+    let response = next.run(request).await;
+    if response.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        tracing::warn!(
+            route = %path,
+            limit_bytes = MAX_BODY_BYTES,
+            "request body exceeds the ingest limit"
+        );
+    }
+    response
 }
 
 // ---------------------------------------------------------------- error type

@@ -19,11 +19,18 @@ pub const ORIGIN: &str = "grafana";
 /// Grafana's "this alert has not ended" sentinel.
 const ZERO_TIME: &str = "0001-01-01T00:00:00Z";
 
-// There is deliberately no alert-count cap. The request body limit (1 MiB,
-// apps/server) bounds how many alerts one POST can carry, and this budget
-// bounds how much they can become once the group is attached to each. A count
-// cap on top of those only ever refused real fleet-wide outages whole, which
-// is the one notification that must not be lost.
+// There is deliberately no alert-count cap in this crate. Removing it raised
+// the ceiling on one notification group from a hard 500 to roughly 540-815
+// alerts, depending on alert size — not a guarantee that a fleet-wide outage
+// always arrives whole. The request body limit (1 MiB, apps/server) is what
+// actually bounds a batch now, and Grafana's rendered `message` digest counts
+// against that limit on the way in even though it is never stored: measured
+// against the fixture's ~685 B slim alert, the ceiling is ~815 alerts with
+// the ~600 B/alert digest included, ~540 at a fatter ~1,339 B alert shape.
+// Above that ceiling the group is still refused whole, now as a 413 from the
+// body-limit layer (logged, apps/server/src/main.rs) rather than a 400 from
+// this crate. See README.md's Grafana section for the operator-side
+// mitigation (Grafana's `maxAlerts` contact-point setting).
 //
 // `split_batch` clones the group into every alert's payload. With the rendered
 // `message` digest excluded, a real group is labels, annotations, a title and
