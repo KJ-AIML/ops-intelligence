@@ -113,7 +113,13 @@ async fn main() -> Result<()> {
         .route("/api/v1/events", get(list_events))
         .route("/api/v1/sources", get(list_sources).post(create_source))
         .route("/api/v1/sources/{id}", patch(update_source))
-        .route("/api/v1/ingest/webhook/{token}", post(webhook::ingest));
+        .route("/api/v1/ingest/webhook/{token}", post(webhook::ingest))
+        // An unmatched path under `/api` is a wrong or stale API call, never
+        // a React Router route. Without this, a typo'd path like
+        // `/api/v1/incidnets` would miss every route above and fall through
+        // to the SPA catch-all below, answering an API client's mistake with
+        // a 200 and an HTML body instead of a 404.
+        .route("/api/{*rest}", axum::routing::any(unknown_api_route));
 
     // The built UI is served from the same origin as the API: no CORS, and no
     // second process on the pilot host. Unknown non-API paths fall back to
@@ -124,7 +130,32 @@ async fn main() -> Result<()> {
     let index = std::path::Path::new(&web_dir).join("index.html");
     let router = if index.is_file() {
         tracing::info!(%web_dir, "serving web UI");
-        router.fallback_service(ServeDir::new(&web_dir).not_found_service(ServeFile::new(index)))
+        // `ServeDir::not_found_service` wraps its fallback in `SetStatus`,
+        // which rewrites the response status to 404 regardless of what the
+        // inner service returned — great for a pretty 404 *page*, wrong here:
+        // it would serve index.html's bytes to every deep link (`/incidents`,
+        // `/sources`, ...) with a 404 status stamped over the 200 ServeFile
+        // actually produced. React Router still renders it client-side, so a
+        // browser click-through looks healthy while `curl -f`, uptime checks
+        // and status-keyed caches all see a false failure. `ServeDir::fallback`
+        // passes the inner status straight through instead, which is the SPA
+        // idiom: unmatched paths get the shell with a real 200.
+        //
+        // That alone would make `/assets/nope.js` (or any other path under
+        // the built asset directory that doesn't exist on disk) *also* fall
+        // through to the SPA shell with a 200 and an HTML content type — a
+        // stale index.html referencing a dead asset hash would then surface
+        // as an opaque "module has MIME type text/html" console error
+        // instead of a clean 404. Nesting a plain `ServeDir` (no fallback of
+        // its own) at `/assets` first keeps that prefix honest: a miss there
+        // is answered by tower-http's own empty-bodied 404 and never reaches
+        // the SPA catch-all below.
+        router
+            .nest_service(
+                "/assets",
+                ServeDir::new(std::path::Path::new(&web_dir).join("assets")),
+            )
+            .fallback_service(ServeDir::new(&web_dir).fallback(ServeFile::new(index)))
     } else {
         tracing::warn!(%web_dir, "web build not found; serving API only (run `npm run build` in web/)");
         router
@@ -140,8 +171,9 @@ async fn main() -> Result<()> {
         // second, hidden one rather than keep two numbers in sync. Both of
         // these layers only wrap the routes already registered above them on
         // this chain: a route added after this `.layer(...)` block falls back
-        // to axum's 2 MiB default with no `warn_on_oversized_body` coverage —
-        // watch for this when Task 5 adds static-file serving.
+        // to axum's 2 MiB default with no `warn_on_oversized_body` coverage.
+        // The static fallback is registered above, before this block, for
+        // exactly this reason.
         .layer(axum::extract::DefaultBodyLimit::disable())
         .layer(middleware::from_fn(warn_on_oversized_body))
         .layer(
@@ -164,10 +196,10 @@ async fn main() -> Result<()> {
 }
 
 /// Placeholder for a request axum's router never matched to a route (its
-/// built-in 404, since this router registers no fallback). `MatchedPath` is
-/// only ever absent in that case, which after the static fallback was added
-/// means every UI asset request; a placeholder rather than the literal path
-/// keeps those spans low-cardinality too.
+/// built-in 404, or the static fallback when the web build is present).
+/// `MatchedPath` is only ever absent in that case, which after the static
+/// fallback was added means every UI asset request; a placeholder rather
+/// than the literal path keeps those spans low-cardinality too.
 const UNMATCHED_ROUTE: &str = "unmatched";
 
 /// The route *pattern* a request matched, e.g.
@@ -253,6 +285,13 @@ type ApiResult<T> = std::result::Result<T, ApiError>;
 
 async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "status": "ok" }))
+}
+
+/// Catches any `/api/...` path that missed every route above. Kept separate
+/// from the SPA fallback so a wrong or stale API call gets a plain 404
+/// instead of the HTML shell.
+async fn unknown_api_route() -> StatusCode {
+    StatusCode::NOT_FOUND
 }
 
 /// Readiness depends on the database actually answering, not on the process
@@ -614,6 +653,195 @@ mod body_limit_tests {
         assert!(body.len() > MAX_BODY_BYTES);
 
         let response = probe_router().oneshot(post_probe(body)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+}
+
+// ------------------------------------------------------ static-serving tests
+
+// Pins the property Task 5's router split exists for: the static fallback
+// registered in front of `.layer(...)` behaves like every other route on the
+// chain — a real 200 for deep links, a real 404 for a missing built asset,
+// and still inside the body limit. Nothing above exercises this:
+// `body_limit_tests::probe_router` registers no fallback at all, so a
+// regression that moved `.fallback_service(...)`/`.nest_service(...)` below
+// the layer block, or swapped `ServeDir::fallback` back for
+// `not_found_service`, would leave every other test green with nothing to
+// catch it (fix round 2 on Task 5 — a browser click-through found this after
+// the curl-body-only checks in the brief's Step 3 missed it).
+//
+// Manually verified (fix round 2, not left in the tree): reverting
+// `ServeDir::fallback(...)` back to `ServeDir::not_found_service(...)` in
+// `static_probe_router` flips `a_deep_link_gets_the_spa_shell_with_200_not_404`
+// from pass to fail (200 becomes 404). Moving the `.nest_service("/assets", ...)`
+// call after `.fallback_service(...)` so `/assets` misses hit the SPA
+// catch-all instead flips `a_missing_built_asset_stays_a_real_404_not_the_spa_shell`
+// (404 becomes 200, text/html body). Moving the `.layer(...)` calls in
+// `static_probe_router` above the `.nest_service`/`.fallback_service` calls —
+// mirroring the bug this task's ordering rule exists to prevent — flips
+// `an_oversized_request_through_the_static_fallback_is_still_413` (413
+// becomes whatever axum's hidden 2 MiB `Json` default would otherwise do,
+// since the body limit no longer wraps the fallback at all).
+#[cfg(test)]
+mod static_serving_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::extract::DefaultBodyLimit;
+    use axum::routing::post as route_post;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    /// A throwaway `web/dist`-shaped directory under the OS temp dir: an
+    /// `index.html` the SPA fallback should serve for any unknown non-API
+    /// path, and an empty `assets/` directory so a request for a file that
+    /// was never built stays a real 404 instead of silently resolving to the
+    /// SPA shell. Removed on drop so a failed assertion still leaves no
+    /// litter on disk. `tempfile` is not a dependency of this workspace, so
+    /// this hand-rolls the same lifetime pattern under `std::env::temp_dir()`.
+    struct TempWebDist {
+        dir: std::path::PathBuf,
+    }
+
+    impl TempWebDist {
+        fn new(unique: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("ops-server-static-test-{unique}"));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(dir.join("assets")).expect("create temp assets dir");
+            std::fs::write(
+                dir.join("index.html"),
+                "<!doctype html><html><body>spa-shell</body></html>",
+            )
+            .expect("write temp index.html");
+            Self { dir }
+        }
+    }
+
+    impl Drop for TempWebDist {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// Mirrors the shape of the chain in `main()`: routes, then the static
+    /// fallback (nested `/assets` plus the SPA catch-all), then the same two
+    /// body-limit layers `main()` wires around the whole router — in that
+    /// order, so this pins the ordering of the fix, not just its presence.
+    fn static_probe_router(web_dir: &std::path::Path) -> Router {
+        async fn accept(Json(_body): Json<serde_json::Value>) -> Json<serde_json::Value> {
+            Json(serde_json::json!({ "received": true }))
+        }
+
+        let index = web_dir.join("index.html");
+        let router = Router::new().route("/probe", route_post(accept));
+        let router = router
+            .nest_service("/assets", ServeDir::new(web_dir.join("assets")))
+            .fallback_service(ServeDir::new(web_dir).fallback(ServeFile::new(index)));
+        router
+            .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
+            .layer(DefaultBodyLimit::disable())
+    }
+
+    fn get(path: &str) -> Request {
+        axum::http::Request::builder()
+            .method("GET")
+            .uri(path)
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_deep_link_gets_the_spa_shell_with_200_not_404() {
+        let dist = TempWebDist::new("deep-link");
+        let response = static_probe_router(&dist.dir)
+            .oneshot(get("/incidents"))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "an unknown non-API path is a React Router route, not a missing \
+             resource: it must serve the SPA shell with 200, not the 404 \
+             `ServeDir::not_found_service` would stamp over it"
+        );
+        let content_type = response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            content_type.starts_with("text/html"),
+            "expected an HTML content type for the SPA shell, got {content_type:?}"
+        );
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(bytes.starts_with(b"<!doctype html>"));
+    }
+
+    #[tokio::test]
+    async fn a_missing_built_asset_stays_a_real_404_not_the_spa_shell() {
+        let dist = TempWebDist::new("missing-asset");
+        let response = static_probe_router(&dist.dir)
+            .oneshot(get("/assets/nope.js"))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "a request under /assets that misses on disk must not resolve to \
+             the SPA shell — that would surface as a confusing 'MIME type \
+             text/html' console error instead of a clean 404"
+        );
+        let content_type = response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            !content_type.starts_with("text/html"),
+            "a missing asset must not be answered with an HTML body, got \
+             content-type {content_type:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_oversized_request_through_the_static_fallback_is_still_413() {
+        // Proves the ordering, not just the presence, of the fix: the static
+        // fallback is registered before `.layer(RequestBodyLimitLayer::new(...))`
+        // on the chain built by `static_probe_router`, so a request the
+        // fallback would otherwise serve never reaches it at all — it is
+        // turned away at the body limit first.
+        //
+        // `RequestBodyLimit::call` (tower-http 0.6.11,
+        // src/limit/service.rs) checks `Content-Length` *eagerly*, before
+        // the inner service — the whole rest of this router, fallback
+        // included — ever runs: `Some(len) if len > self.limit =>
+        // ResponseFuture::payload_too_large()`. That is deliberate here: a
+        // static-file service like `ServeDir` never reads a POST body at all
+        // (it 405s on the method before touching it), so without an eager,
+        // header-based check an oversized request that the router routes to
+        // static serving would sail through unread rather than being turned
+        // away — which is exactly the gap this task's ordering rule closes.
+        // The `Content-Length` header is set explicitly below to exercise
+        // that path; body_limit_tests's own cases omit it and instead rely
+        // on the lazy, read-time enforcement that fires once the `/probe`
+        // handler's `Json` extractor actually consumes the body.
+        let dist = TempWebDist::new("oversized");
+        let target = MAX_BODY_BYTES + MAX_BODY_BYTES / 4;
+        let body = serde_json::to_vec(&serde_json::json!({ "pad": "x".repeat(target) })).unwrap();
+        assert!(body.len() > MAX_BODY_BYTES);
+        let content_length = body.len().to_string();
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/not-a-real-route")
+            .header("content-type", "application/json")
+            .header(axum::http::header::CONTENT_LENGTH, content_length)
+            .body(Body::from(body))
+            .unwrap();
+        let response = static_probe_router(&dist.dir)
+            .oneshot(request)
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 }
