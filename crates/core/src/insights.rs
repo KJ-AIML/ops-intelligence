@@ -19,6 +19,9 @@ pub struct OperationsSummary {
     pub from: Option<DateTime<Utc>>,
     pub to: Option<DateTime<Utc>>,
     pub raw_signals: i64,
+    /// Raw signals that could not be normalized. Shown here because a signal
+    /// that fails quietly is exactly the loss this product exists to prevent.
+    pub failed_signals: i64,
     pub events: i64,
     pub events_without_incident: i64,
     pub incidents: i64,

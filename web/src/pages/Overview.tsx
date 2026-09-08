@@ -45,6 +45,10 @@ export default function Overview() {
           <div className="value">{s.events.toLocaleString()}</div>
           <div className="label">events</div>
         </div>
+        <div className={`stat${s.failed_signals > 0 ? " critical" : ""}`}>
+          <div className="value">{s.failed_signals}</div>
+          <div className="label">failed signals</div>
+        </div>
         <div className="stat">
           <div className="value">{s.incidents.toLocaleString()}</div>
           <div className="label">incidents</div>

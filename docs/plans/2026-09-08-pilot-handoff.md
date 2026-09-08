@@ -1757,22 +1757,47 @@ In `apps/server/src/main.rs` add the import:
 use tower_http::services::{ServeDir, ServeFile};
 ```
 
-Remove the line `.layer(tower_http::cors::CorsLayer::permissive())`. Then, between `.with_state(state);` and the `TcpListener::bind` call, add:
+Remove the line `.layer(tower_http::cors::CorsLayer::permissive())`.
+
+Layer order matters here, and the executor flagged it in Task 3d: `Router::layer` wraps only the routes registered above it on the chain, so a fallback added after the layer block would sit outside the body limit, the 413 warning and the trace span. Register the fallback before the layers. Split the existing `let app = Router::new()....with_state(state);` chain into three parts. First, the routes alone:
+
+```rust
+    let router = Router::new()
+        .route("/health", get(health))
+        // ... every existing .route(...) line, unchanged ...
+        .route("/api/v1/ingest/webhook/{token}", post(webhook::ingest));
+```
+
+Second, the conditional fallback:
 
 ```rust
     // The built UI is served from the same origin as the API: no CORS, and no
     // second process on the pilot host. Unknown non-API paths fall back to
-    // index.html so React Router owns them.
+    // index.html so React Router owns them. Registered before the layer block
+    // so static requests get the same body limit, 413 warning and trace span
+    // as everything else.
     let web_dir = std::env::var("WEB_DIST_DIR").unwrap_or_else(|_| "web/dist".to_string());
     let index = std::path::Path::new(&web_dir).join("index.html");
-    let app = if index.is_file() {
+    let router = if index.is_file() {
         tracing::info!(%web_dir, "serving web UI");
-        app.fallback_service(ServeDir::new(&web_dir).not_found_service(ServeFile::new(index)))
+        router.fallback_service(ServeDir::new(&web_dir).not_found_service(ServeFile::new(index)))
     } else {
         tracing::warn!(%web_dir, "web build not found; serving API only (run `npm run build` in web/)");
-        app
+        router
     };
 ```
+
+Third, the existing layer block and state, unchanged apart from starting from `router`:
+
+```rust
+    let app = router
+        .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
+        // ... the existing DefaultBodyLimit::disable(), warn_on_oversized_body
+        //     and TraceLayer lines, unchanged ...
+        .with_state(state);
+```
+
+Also update the doc comment on `UNMATCHED_ROUTE`: it is now reachable, for static-file requests served by the fallback, which match no route pattern. Replace "so this should not be reachable in practice, but a placeholder is safer than a panic if it ever is" with "which after the static fallback was added means every UI asset request; a placeholder rather than the literal path keeps those spans low-cardinality too".
 
 - [ ] **Step 3: Build the UI and check**
 
@@ -2321,6 +2346,8 @@ git commit -m "Handoff: pilot runbook for the design partner; replay prints its 
 
 - [ ] **Step 1: Status and layout**
 
+In the README "Grafana" section, the sentence calling 2.5 KB "the fattest measured alert shape" is wrong: the measured fat shape is about 1.9 KB with its share of the digest, and 2.5 KB is the margin the `Max alerts` arithmetic uses. Reword it to say so, with both numbers.
+
 In the status table, change the P2 row to:
 
 ```markdown
@@ -2394,6 +2421,6 @@ git commit -m "Handoff: README reflects the Grafana adapter, Docker run path, an
 | audit | | 2026-09-08, read-only: gate reproduced (100 workspace tests, 3 database tests, fmt, clippy `-D warnings`, web typecheck), tree clean. b712ac2 meets its stated intent but assumes a few-KB group; Grafana's `message` digest breaks that assumption, so Task 3b was added. |
 | 3b | 937fb42 | as planned; the plan itself committed alongside. Audit 2026-09-08: gate reproduced (102 workspace tests, 3 database tests, fmt, clippy), diff matches the plan line for line. Executor's growth analysis of the remaining group fields (commonLabels and commonAnnotations are intersections, title carries a count) checked and agreed. |
 | 3c | e46209b, 3d8d2bc, c843bf2 | cap removed as planned. Executor found the task's premise wrong: the digest is in the request body even though it is not stored, so 1 MiB admits 540 to 815 alerts, not 700 to 1,300; and a 413 from the body-limit layer was silent at the default log level. Fixed with measured numbers and a one-warn middleware. Audit 2026-09-08: gate reproduced (102 workspace tests, 3 database tests, fmt, clippy), diffs read, arithmetic agreed. |
-| 3d | | pending; do before Task 4. Raises the body limit to 4 MiB and makes Grafana `Max alerts` the operator-side guarantee. |
+| 3d | f115efc, b5ab8d3 | body limit raised, `Max alerts` documented, large-batch regime pinned. Executor measured all four numbers the task asserts before dispatching; all held. Found that axum's `Json` extractor carries its own 2 MiB default, so the raise was a no-op until `DefaultBodyLimit::disable()`; found that the 413 warning and the trace span both logged the literal path, which on the ingest route is the token; fixed both with `MatchedPath` and pinned the effective limit with a router-level test. Audit 2026-09-09: gate reproduced (105 workspace tests, 3 database tests, fmt, clippy), diffs read, layer order and extension availability checked. |
 
-Executor's deferred-minor ledger, kept for the final review: partial mid-batch database failure commits earlier rows and returns 500 without touching last-seen (Grafana's retry deduplicates); the truncation warning fires before persistence, so it can name a group a later database failure never stored; the Task 2 minors as recorded by the executing session. Closed by Task 3b: the `_ =>` catch-all and the `truncatedAlerts` read on every payload. Closed by Task 3c: silent generic-webhook refusals, the unpinned `truncatedAlerts` preservation, and the README's imprecise description of the bound. Closed by Task 3d: no test in the above-500 regime, and the two "full-cap" test comments. Informational, kept: per-request insert count now scales with the body limit, a few thousand sequential inserts at most, seconds on the pilot host; revisit only if Grafana's webhook timeout is ever hit.
+Executor's deferred-minor ledger, kept for the final review: partial mid-batch database failure commits earlier rows and returns 500 without touching last-seen (Grafana's retry deduplicates); the truncation warning fires before persistence, so it can name a group a later database failure never stored; the Task 2 minors as recorded by the executing session. Closed by Task 3b: the `_ =>` catch-all and the `truncatedAlerts` read on every payload. Closed by Task 3c: silent generic-webhook refusals, the unpinned `truncatedAlerts` preservation, and the README's imprecise description of the bound. Closed by Task 3d: no test in the above-500 regime, and the two "full-cap" test comments. Informational, kept: per-request insert count now scales with the body limit, a few thousand sequential inserts at most, seconds on the pilot host; revisit only if Grafana's webhook timeout is ever hit. From Task 3d, kept: the 413 warning's message says "ingest limit" on every route; the `LARGE_BATCH` test comment describes a body-limit regime the adapter crate cannot exercise; `http-body-util` is pinned in the server crate rather than the workspace table. Carried into Task 5: the fallback must be registered before the layer block (now written into that task). Carried into Task 9: the README's "fattest measured" wording.

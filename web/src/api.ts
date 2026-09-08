@@ -30,6 +30,7 @@ export interface RecurringPattern {
 export interface Summary {
   window: { from: string | null; to: string | null };
   raw_signals: number;
+  failed_signals: number;
   events: number;
   events_without_incident: number;
   incidents: number;

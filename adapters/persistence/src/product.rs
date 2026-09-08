@@ -301,6 +301,9 @@ impl ops_core::ports::ProductQueries for PgStore {
             SELECT
               (SELECT COUNT(*) FROM raw_signals rs
                 WHERE rs.organization_id = $1) AS raw_signals,
+              (SELECT COUNT(*) FROM raw_signals rs
+                WHERE rs.organization_id = $1
+                  AND rs.processing_status = 'failed') AS failed_signals,
               (SELECT COUNT(*) FROM events e
                 WHERE e.organization_id = $1
                   AND ($2::timestamptz IS NULL OR e.occurred_at >= $2)
@@ -447,6 +450,7 @@ impl ops_core::ports::ProductQueries for PgStore {
             from,
             to,
             raw_signals: totals.try_get("raw_signals").map_err(persistence)?,
+            failed_signals: totals.try_get("failed_signals").map_err(persistence)?,
             events: totals.try_get("events").map_err(persistence)?,
             events_without_incident: totals
                 .try_get("events_without_incident")

@@ -265,6 +265,12 @@ async fn postgres_normalization_acceptance() {
         store.count_by_status(failures.id).await.unwrap(),
         vec![("failed".into(), 6), ("processed".into(), 1)]
     );
+    // The failed count must be visible where the operator looks, not only in SQL.
+    let summary =
+        ops_core::ports::ProductQueries::operations_summary(&store, failures.id, None, None)
+            .await
+            .unwrap();
+    assert_eq!(summary.failed_signals, 6);
     assert_eq!(
         process_received(&store, failures.id, &CsvNormalizer, &clock)
             .await

@@ -14,6 +14,7 @@ use serde::Serialize;
 pub struct SummaryResponse {
     pub window: WindowDto,
     pub raw_signals: i64,
+    pub failed_signals: i64,
     pub events: i64,
     pub events_without_incident: i64,
     pub incidents: i64,
@@ -258,6 +259,7 @@ impl From<OperationsSummary> for SummaryResponse {
                 to: s.to,
             },
             raw_signals: s.raw_signals,
+            failed_signals: s.failed_signals,
             events: s.events,
             events_without_incident: s.events_without_incident,
             incidents: s.incidents,
