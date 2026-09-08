@@ -415,9 +415,13 @@ mod tests {
 
     #[test]
     fn a_fleet_wide_group_is_accepted_whole() {
-        // 1,200 alerts is about what a 1 MiB body holds at realistic alert
-        // sizes. A fleet-wide outage must arrive whole, not be refused for
-        // being large: it is the one notification that must not be lost.
+        // 1,200 is simply well above the deleted 500-alert cap: this proves
+        // the adapter itself imposes no count limit on a group, nothing about
+        // what a 1 MiB HTTP body can carry. That ceiling lives one layer up,
+        // at the request body limit (apps/server), and is a function of alert
+        // size — see the comment above MAX_BATCH_EXPANSION_BYTES for the
+        // measured number; it is not repeated here so there is one place to
+        // correct if it changes.
         let signals = split_batch(&batch_of(1_200)).unwrap();
         assert_eq!(signals.len(), 1_200);
         assert_eq!(
