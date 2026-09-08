@@ -31,6 +31,7 @@ use serde::Deserialize;
 use std::str::FromStr;
 use std::sync::Arc;
 use tower_http::limit::RequestBodyLimitLayer;
+use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
 const DEFAULT_LIMIT: i64 = 100;
@@ -99,7 +100,7 @@ async fn main() -> Result<()> {
         base_url,
     };
 
-    let app = Router::new()
+    let router = Router::new()
         .route("/health", get(health))
         .route("/health/ready", get(ready))
         .route("/api/v1/operations/summary", get(summary))
@@ -112,7 +113,24 @@ async fn main() -> Result<()> {
         .route("/api/v1/events", get(list_events))
         .route("/api/v1/sources", get(list_sources).post(create_source))
         .route("/api/v1/sources/{id}", patch(update_source))
-        .route("/api/v1/ingest/webhook/{token}", post(webhook::ingest))
+        .route("/api/v1/ingest/webhook/{token}", post(webhook::ingest));
+
+    // The built UI is served from the same origin as the API: no CORS, and no
+    // second process on the pilot host. Unknown non-API paths fall back to
+    // index.html so React Router owns them. Registered before the layer block
+    // so static requests get the same body limit, 413 warning and trace span
+    // as everything else.
+    let web_dir = std::env::var("WEB_DIST_DIR").unwrap_or_else(|_| "web/dist".to_string());
+    let index = std::path::Path::new(&web_dir).join("index.html");
+    let router = if index.is_file() {
+        tracing::info!(%web_dir, "serving web UI");
+        router.fallback_service(ServeDir::new(&web_dir).not_found_service(ServeFile::new(index)))
+    } else {
+        tracing::warn!(%web_dir, "web build not found; serving API only (run `npm run build` in web/)");
+        router
+    };
+
+    let app = router
         .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
         // axum's `Json` extractor enforces its own 2 MiB default independently
         // of the layer above, so raising MAX_BODY_BYTES past 2 MiB would
@@ -135,7 +153,6 @@ async fn main() -> Result<()> {
                 )
             }),
         )
-        .layer(tower_http::cors::CorsLayer::permissive())
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind((host.as_str(), port))
@@ -148,8 +165,9 @@ async fn main() -> Result<()> {
 
 /// Placeholder for a request axum's router never matched to a route (its
 /// built-in 404, since this router registers no fallback). `MatchedPath` is
-/// only ever absent in that case, so this should not be reachable in
-/// practice, but a placeholder is safer than a panic if it ever is.
+/// only ever absent in that case, which after the static fallback was added
+/// means every UI asset request; a placeholder rather than the literal path
+/// keeps those spans low-cardinality too.
 const UNMATCHED_ROUTE: &str = "unmatched";
 
 /// The route *pattern* a request matched, e.g.
