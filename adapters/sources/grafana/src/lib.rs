@@ -22,15 +22,15 @@ const ZERO_TIME: &str = "0001-01-01T00:00:00Z";
 // There is deliberately no alert-count cap in this crate. Removing it raised
 // the ceiling on one notification group from a hard 500 to roughly 540-815
 // alerts, depending on alert size — not a guarantee that a fleet-wide outage
-// always arrives whole. The request body limit (1 MiB, apps/server) is what
+// always arrives whole. The request body limit (4 MiB, apps/server) is what
 // actually bounds a batch now, and Grafana's rendered `message` digest counts
 // against that limit on the way in even though it is never stored: measured
-// against the fixture's ~685 B slim alert, the ceiling is ~815 alerts with
-// the ~600 B/alert digest included, ~540 at a fatter ~1,339 B alert shape.
-// Above that ceiling the group is still refused whole, now as a 413 from the
-// body-limit layer (logged, apps/server/src/main.rs) rather than a 400 from
-// this crate. See README.md's Grafana section for the operator-side
-// mitigation (Grafana's `maxAlerts` contact-point setting).
+// against the fixture's ~685 B slim alert, a 1 MiB limit admitted ~815 alerts
+// with the ~600 B/alert digest included and ~540 at a fatter ~1,339 B shape,
+// so 4 MiB admits roughly 2,160 to 3,260. Above that the group is refused
+// whole, as a 413 from the body-limit layer (logged, apps/server/src/main.rs),
+// not a 400 from this crate. The operator-side guarantee is Grafana's
+// `Max alerts` setting; see README.md's Grafana section for the arithmetic.
 //
 // `split_batch` clones the group into every alert's payload. With the rendered
 // `message` digest excluded, a real group is labels, annotations, a title and
@@ -270,6 +270,10 @@ mod tests {
     /// a probe size shared by the expansion and digest tests.
     const FULL_BATCH: usize = 500;
 
+    /// Well past anything the deleted count cap allowed, inside what a 4 MiB
+    /// body holds at measured alert sizes. Not a limit; a probe size.
+    const LARGE_BATCH: usize = 3_000;
+
     fn batch() -> Value {
         serde_json::from_str(include_str!("../tests/fixtures/grafana-webhook-v1.json")).unwrap()
     }
@@ -417,7 +421,7 @@ mod tests {
     fn a_fleet_wide_group_is_accepted_whole() {
         // 1,200 is simply well above the deleted 500-alert cap: this proves
         // the adapter itself imposes no count limit on a group, nothing about
-        // what a 1 MiB HTTP body can carry. That ceiling lives one layer up,
+        // what the request body limit can carry. That ceiling lives one layer up,
         // at the request body limit (apps/server), and is a function of alert
         // size — see the comment above MAX_BATCH_EXPANSION_BYTES for the
         // measured number; it is not repeated here so there is one place to
@@ -441,7 +445,7 @@ mod tests {
 
     #[test]
     fn a_batch_whose_group_times_alert_count_exceeds_the_expansion_budget_is_rejected() {
-        // A full-cap batch (FULL_BATCH alerts) with a group padded past 100 KB
+        // A FULL_BATCH-sized batch with a group padded past 100 KB
         // multiplies out to ~50 MB, comfortably clearing the 32 MiB budget.
         let huge = batch_with_padded_group(FULL_BATCH, 100_000);
         let err = split_batch(&huge).unwrap_err().to_string();
@@ -451,11 +455,20 @@ mod tests {
     #[test]
     fn a_realistic_batch_stays_within_the_expansion_budget() {
         // A few KB of group context (labels, annotations, URLs) across a
-        // full-cap batch of alerts is the shape of a real Grafana
+        // FULL_BATCH batch of alerts is the shape of a real Grafana
         // notification, and it multiplies out to about 1 MB — well inside
         // the budget.
         let realistic = batch_with_padded_group(FULL_BATCH, 2_000);
         assert!(split_batch(&realistic).is_ok());
+    }
+
+    #[test]
+    fn a_large_batch_with_a_realistic_group_stays_far_inside_the_expansion_budget() {
+        // 3,000 alerts times a 2 KB group is 6 MB, under a fifth of the budget.
+        // This is the regime the 4 MiB body limit admits; the budget must not
+        // bind here, or a raised body limit would just move the refusal.
+        let signals = split_batch(&batch_with_padded_group(LARGE_BATCH, 2_000)).unwrap();
+        assert_eq!(signals.len(), LARGE_BATCH);
     }
 
     #[test]

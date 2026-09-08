@@ -1515,6 +1515,129 @@ git commit -m "Handoff: no alert-count cap on Grafana batches; generic webhook r
 
 ---
 
+### Task 3d: Body limit 4 MiB, Grafana max alerts as the operator guarantee, large-batch regime pinned
+
+Added after the audit of e46209b, 3d8d2bc and c843bf2. Do this before Task 4.
+
+**Ruling on the body limit: raise it to 4 MiB, and make Grafana's `Max alerts` a required contact-point setting in the runbook.** The executor measured the real ceiling at 1 MiB as 540 to 815 alerts, because Grafana's rendered digest travels in the body even though it is never stored. The arithmetic for raising it: the adversarial memory ceiling is set by the 32 MiB expansion budget, not by the body limit, so raising the body limit does not raise what a hostile body can cost. What it raises is the realistic ceiling, to roughly 2,160 to 3,260 alerts per notification at the same measured alert shapes. A real request that large costs a few tens of MB in flight and a few thousand sequential inserts, seconds on the pilot host. The cost of being wrong the other way is a fleet-wide outage refused whole. That asymmetry decides it.
+
+The body limit alone still cannot promise "arrives whole" for every fleet, and this plan has now been wrong three times by asserting bounds from a model. So the guarantee moves to the operator side, where it can be set from real numbers: Grafana's webhook contact point has a `Max alerts` setting that truncates the group before sending. With `Max alerts` at 1,000 and the fattest measured alert shape (about 2.5 KB including its share of the digest), a body is at most about 2.5 MB, under 4 MiB with margin. Beyond 1,000 alerts the loss is a truncation that is logged and whose count is pinned into stored evidence, never a whole refusal. That is the pair of settings the runbook now mandates, with the arithmetic beside it so the design partner can re-derive it from their own alert sizes.
+
+**Files:**
+- Modify: `apps/server/src/main.rs` (`MAX_BODY_BYTES` and its comment)
+- Modify: `adapters/sources/grafana/src/lib.rs` (the comment above `MAX_BATCH_EXPANSION_BYTES`, two test comments, one new probe constant, one new test)
+- Modify: `README.md` "Grafana" section (numbers, `Max alerts` guidance)
+- Modify: this plan, Task 8 runbook sections 4 and 9 (already updated; the runbook is not written yet)
+
+**Interfaces:** unchanged.
+
+- [ ] **Step 1: Pin the regime the body limit now admits**
+
+In the `tests` module of `adapters/sources/grafana/src/lib.rs`, after the `FULL_BATCH` constant add:
+
+```rust
+    /// Well past anything the deleted count cap allowed, inside what a 4 MiB
+    /// body holds at measured alert sizes. Not a limit; a probe size.
+    const LARGE_BATCH: usize = 3_000;
+```
+
+and add this test next to `a_realistic_batch_stays_within_the_expansion_budget`:
+
+```rust
+    #[test]
+    fn a_large_batch_with_a_realistic_group_stays_far_inside_the_expansion_budget() {
+        // 3,000 alerts times a 2 KB group is 6 MB, under a fifth of the budget.
+        // This is the regime the 4 MiB body limit admits; the budget must not
+        // bind here, or a raised body limit would just move the refusal.
+        let signals = split_batch(&batch_with_padded_group(LARGE_BATCH, 2_000)).unwrap();
+        assert_eq!(signals.len(), LARGE_BATCH);
+    }
+```
+
+Fix the two comments the executor flagged: in `a_batch_whose_group_times_alert_count_exceeds_the_expansion_budget_is_rejected`, change "A full-cap batch (FULL_BATCH alerts)" to "A FULL_BATCH-sized batch"; in `a_realistic_batch_stays_within_the_expansion_budget`, change "full-cap batch of alerts is the shape" to "FULL_BATCH batch of alerts is the shape".
+
+Run: `cargo test -p ops-source-grafana`
+Expected: all pass. The new test passes on the current code; it is a regression pin for the regime Step 2 opens, not a failing-first test.
+
+- [ ] **Step 2: Raise the body limit**
+
+In `apps/server/src/main.rs`, replace the comment and constant for `MAX_BODY_BYTES` with:
+
+```rust
+/// Grafana posts one body per notification group, and its rendered digest
+/// travels in that body even though the engine never stores it. Measured
+/// against the fixture, a 1 MiB limit admitted 540 to 815 alerts; 4 MiB admits
+/// roughly 2,160 to 3,260 at the same alert shapes. The cap still keeps a
+/// misconfigured source from exhausting memory (tech sheet 21): what a hostile
+/// body can cost is bounded by the adapter's expansion budget, not by this
+/// number, so raising this raises only the realistic ceiling. The operator-side
+/// guarantee is Grafana's `Max alerts` contact-point setting; see the README.
+const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
+```
+
+Run: `cargo build -p ops-server`
+Expected: clean. The 413 middleware reads the constant, so its log line reports the new limit without a change.
+
+- [ ] **Step 3: Correct the numbers in the adapter comment**
+
+In the comment above `MAX_BATCH_EXPANSION_BYTES` in `adapters/sources/grafana/src/lib.rs`, replace the sentences that cite "1 MiB", "~815", and "~540" with:
+
+```rust
+// The request body limit (4 MiB, apps/server) is what actually bounds a batch
+// now, and Grafana's rendered `message` digest counts against that limit on
+// the way in even though it is never stored: measured against the fixture's
+// ~685 B slim alert, a 1 MiB limit admitted ~815 alerts with the ~600 B/alert
+// digest included and ~540 at a fatter ~1,339 B shape, so 4 MiB admits roughly
+// 2,160 to 3,260. Above that the group is refused whole, as a 413 from the
+// body-limit layer (logged, apps/server/src/main.rs), not a 400 from this
+// crate. The operator-side guarantee is Grafana's `Max alerts` setting; see
+// README.md's Grafana section for the arithmetic.
+```
+
+Keep the rest of that comment block as it is.
+
+- [ ] **Step 4: README**
+
+In the README "Grafana" section, replace the paragraph that begins "Grafana's rendered `message` digest is not stored" and the paragraph that begins "For a fleet larger than the body-limit ceiling" with:
+
+```markdown
+Grafana's rendered `message` digest is not stored — it is a rendering of
+`alerts[]`, which is stored in full — but Grafana sends it in the same POST, so it
+counts against the 4 MiB request body limit on the way in. There is no
+alert-count cap in the adapter. Measured against the fixture, that limit admits
+roughly 2,160 alerts of a fat ~1.3 KB shape or 3,260 of a slim ~685 B shape, digest
+included. Above it the request is refused whole with a 413, logged as
+`request body exceeds the ingest limit`; Grafana retries a few times and then
+discards the notification, so that log line means a group was lost.
+
+Set **Max alerts** on the Grafana contact point so that can never happen. With
+`Max alerts` at 1,000 and the fattest measured alert shape (about 2.5 KB with its
+share of the digest), a body is at most about 2.5 MB. Beyond 1,000 alerts Grafana
+truncates the group itself before sending; the truncation is warn-logged
+(`grafana dropped alerts from this notification group`) and the `truncatedAlerts`
+count is preserved into every stored alert's group context, pinned by a test, so
+the loss is visible and bounded instead of silent and total. Re-derive the number
+from your own alert sizes: `Max alerts` times bytes per alert must stay under
+4 MiB with margin.
+```
+
+- [ ] **Step 5: Manual check**
+
+With the server running and `TOKEN` from a Grafana source, reuse the Task 3b Step 5 script with `range(2500)` instead of `range(400)`; the body is about 3.2 MB.
+
+Expected: `202` with `"inserted":2500`. Before this task the same request returned `413` and the server log showed `request body exceeds the ingest limit` with `limit_bytes=1048576`.
+
+- [ ] **Step 6: Checks and commit**
+
+Run the four workspace checks.
+
+```bash
+git add apps/server/src/main.rs adapters/sources/grafana/src/lib.rs README.md docs/plans/2026-09-08-pilot-handoff.md
+git commit -m "Handoff: 4 MiB ingest body limit; Grafana max alerts documented as the operator guarantee; large-batch regime pinned"
+```
+
+---
+
 ### Task 4: Failed signals are visible in the Operations View
 
 **Files:**
@@ -2068,7 +2191,10 @@ In Grafana (Alerting → Contact points):
 
 1. New contact point. Name `ops-intelligence`. Integration **Webhook**. URL: the
    ingestion URL from step 3. HTTP method **POST**. Leave "Send resolved" on:
-   recoveries are half the data.
+   recoveries are half the data. Set **Max alerts** to `1000`. This is not
+   optional: it is what guarantees a fleet-wide storm is truncated with a count
+   instead of refused whole. If your alerts are unusually large, the rule is
+   `Max alerts` times bytes per alert under 4 MiB with margin.
 2. Click **Test** and send the test notification. Back on the Sources page, the
    source's "Last seen" should update within a few seconds. If it does not, the
    host is not reachable from Grafana; check the firewall before anything else.
@@ -2153,14 +2279,17 @@ golden cases for phase P3.
 
 ## 9. Known ceilings
 
-- Request bodies over 1 MiB are rejected. Grafana groups rarely approach this;
-  if `413` appears in the server log, tell the author.
-- There is no limit on how many alerts one notification may carry. A batch whose
-  group context multiplied across its alerts would pass 32 MiB is refused and
-  logged as `grafana batch rejected`; Grafana retries, then gives up, so that
-  group is lost. If the line appears in `docker compose logs server`, tell the
-  author the same day: it means a real notification was shaped unlike anything
-  the engine expects.
+- Request bodies over 4 MiB are refused whole and logged as
+  `request body exceeds the ingest limit`. With `Max alerts` set as in section 4
+  this cannot happen; if the line appears anyway, tell the author the same day.
+- A group truncated by `Max alerts` is logged as
+  `grafana dropped alerts from this notification group`, with the count. That is
+  the expected behaviour in a large storm, not a fault; note the count for the
+  review session.
+- A batch whose group context multiplied across its alerts would pass 32 MiB is
+  refused and logged as `grafana batch rejected`. At real Grafana shapes this is
+  unreachable. If the line appears, tell the author: the notification was shaped
+  unlike anything the engine expects.
 - A generic-webhook body the engine cannot read is refused and logged as
   `webhook payload rejected`. Same instruction.
 - Which alert labels mean environment, service and resource are fixed guesses
@@ -2264,6 +2393,7 @@ git commit -m "Handoff: README reflects the Grafana adapter, Docker run path, an
 | 3 | 2f710bd, b712ac2 | executor added `MAX_BATCH_EXPANSION_BYTES = 32 MiB`; UI half verified in a browser by the author on a clean database |
 | audit | | 2026-09-08, read-only: gate reproduced (100 workspace tests, 3 database tests, fmt, clippy `-D warnings`, web typecheck), tree clean. b712ac2 meets its stated intent but assumes a few-KB group; Grafana's `message` digest breaks that assumption, so Task 3b was added. |
 | 3b | 937fb42 | as planned; the plan itself committed alongside. Audit 2026-09-08: gate reproduced (102 workspace tests, 3 database tests, fmt, clippy), diff matches the plan line for line. Executor's growth analysis of the remaining group fields (commonLabels and commonAnnotations are intersections, title carries a count) checked and agreed. |
-| 3c | | pending; do before Task 4. Removes the alert-count cap on the reasoning written in the task. |
+| 3c | e46209b, 3d8d2bc, c843bf2 | cap removed as planned. Executor found the task's premise wrong: the digest is in the request body even though it is not stored, so 1 MiB admits 540 to 815 alerts, not 700 to 1,300; and a 413 from the body-limit layer was silent at the default log level. Fixed with measured numbers and a one-warn middleware. Audit 2026-09-08: gate reproduced (102 workspace tests, 3 database tests, fmt, clippy), diffs read, arithmetic agreed. |
+| 3d | | pending; do before Task 4. Raises the body limit to 4 MiB and makes Grafana `Max alerts` the operator-side guarantee. |
 
-Executor's deferred-minor ledger, kept for the final review: partial mid-batch database failure commits earlier rows and returns 500 without touching last-seen (Grafana's retry deduplicates); the truncation warning fires before persistence, so it can name a group a later database failure never stored; the Task 2 minors as recorded by the executing session. Closed by Task 3b: the `_ =>` catch-all and the `truncatedAlerts` read on every payload. Closed by Task 3c: silent generic-webhook refusals, the unpinned `truncatedAlerts` preservation, and the README's imprecise description of the bound.
+Executor's deferred-minor ledger, kept for the final review: partial mid-batch database failure commits earlier rows and returns 500 without touching last-seen (Grafana's retry deduplicates); the truncation warning fires before persistence, so it can name a group a later database failure never stored; the Task 2 minors as recorded by the executing session. Closed by Task 3b: the `_ =>` catch-all and the `truncatedAlerts` read on every payload. Closed by Task 3c: silent generic-webhook refusals, the unpinned `truncatedAlerts` preservation, and the README's imprecise description of the bound. Closed by Task 3d: no test in the above-500 regime, and the two "full-cap" test comments. Informational, kept: per-request insert count now scales with the body limit, a few thousand sequential inserts at most, seconds on the pilot host; revisit only if Grafana's webhook timeout is ever hit.

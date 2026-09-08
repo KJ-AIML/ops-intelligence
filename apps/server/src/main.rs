@@ -34,10 +34,15 @@ use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
 const DEFAULT_LIMIT: i64 = 100;
-/// Alert payloads are small, but Grafana posts one body per notification group
-/// and a large group with values and annotations can pass 256 KiB. A cap still
-/// keeps a misconfigured source from exhausting memory (tech sheet 21).
-const MAX_BODY_BYTES: usize = 1024 * 1024;
+/// Grafana posts one body per notification group, and its rendered digest
+/// travels in that body even though the engine never stores it. Measured
+/// against the fixture, a 1 MiB limit admitted 540 to 815 alerts; 4 MiB admits
+/// roughly 2,160 to 3,260 at the same alert shapes. The cap still keeps a
+/// misconfigured source from exhausting memory (tech sheet 21): what a hostile
+/// body can cost is bounded by the adapter's expansion budget, not by this
+/// number, so raising this raises only the realistic ceiling. The operator-side
+/// guarantee is Grafana's `Max alerts` contact-point setting; see the README.
+const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 /// Upper bound on the set considered when ranking by attention. Matches the
 /// repository's own hard LIMIT clamp.
 const MAX_RANKING_CANDIDATES: i64 = 500;
@@ -109,6 +114,13 @@ async fn main() -> Result<()> {
         .route("/api/v1/sources/{id}", patch(update_source))
         .route("/api/v1/ingest/webhook/{token}", post(webhook::ingest))
         .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
+        // axum's `Json` extractor enforces its own 2 MiB default independently
+        // of the layer above, so raising MAX_BODY_BYTES past 2 MiB would
+        // otherwise be silently capped back down to 2 MiB here. The layer
+        // above is already the single source of truth for the ingest limit
+        // (and the one `warn_on_oversized_body` reports), so disable this
+        // second, hidden one rather than keep two numbers in sync.
+        .layer(axum::extract::DefaultBodyLimit::disable())
         .layer(middleware::from_fn(warn_on_oversized_body))
         .layer(TraceLayer::new_for_http())
         .layer(tower_http::cors::CorsLayer::permissive())

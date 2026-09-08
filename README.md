@@ -171,28 +171,26 @@ re-fires do not.
 
 Grafana's rendered `message` digest is not stored — it is a rendering of
 `alerts[]`, which is stored in full — but Grafana sends it in the same POST, so it
-still counts against the 1 MiB request body limit on the way in. There is no
-alert-count cap in this crate: removing it raised the ceiling on one notification
-group from a hard 500 to roughly 540-815 alerts, depending on alert size (measured
-against the fixture's ~685 B slim alert: ~815 alerts with Grafana's ~600 B/alert
-digest included, ~540 at a fatter ~1,339 B alert shape). That is not a guarantee a
-fleet-wide outage always arrives whole. Above the ceiling the request is refused
-whole by the 1 MiB body limit with a 413, logged as `request body exceeds the
-ingest limit`; Grafana retries a few times and then discards the notification, so
-that log line means a group was lost.
+counts against the 4 MiB request body limit on the way in. There is no
+alert-count cap in the adapter. Measured against the fixture, that limit admits
+roughly 2,160 alerts of a fat ~1.3 KB shape or 3,260 of a slim ~685 B shape, digest
+included. Above it the request is refused whole with a 413, logged as
+`request body exceeds the ingest limit`; Grafana retries a few times and then
+discards the notification, so that log line means a group was lost.
+
+Set **Max alerts** on the Grafana contact point so that can never happen. With
+`Max alerts` at 1,000 and the fattest measured alert shape (about 2.5 KB with its
+share of the digest), a body is at most about 2.5 MB. Beyond 1,000 alerts Grafana
+truncates the group itself before sending; the truncation is warn-logged
+(`grafana dropped alerts from this notification group`) and the `truncatedAlerts`
+count is preserved into every stored alert's group context, pinned by a test, so
+the loss is visible and bounded instead of silent and total. Re-derive the number
+from your own alert sizes: `Max alerts` times bytes per alert must stay under
+4 MiB with margin.
 
 A batch whose group context multiplied across its alerts would separately exceed
 32 MiB is refused with a 400 and logged as `grafana batch rejected`; at realistic
 Grafana payload shapes this is unreachable and exists only as a safety net.
-
-For a fleet larger than the body-limit ceiling, set `maxAlerts` on the Grafana
-contact point below that ceiling. Grafana then truncates the group itself before
-sending it, instead of the whole POST being refused — and truncation is the case
-this engine handles well: it is warn-logged
-(`grafana dropped alerts from this notification group`), and the
-`truncatedAlerts` count is preserved into every stored alert's group context
-(pinned by a test), so the loss is visible and bounded instead of silent and
-total.
 
 ```sh
 curl -X POST localhost:8080/api/v1/sources -H 'content-type: application/json' \
