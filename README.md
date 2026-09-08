@@ -21,7 +21,8 @@ Architecture is frozen at v0.1 — see `../../resources/operations-intelligence-
 | 5 | Operations UI | **done** |
 | 6 | AI reasoner behind the port | **done; off by default** |
 | P1 | Pilot Lab: capture, datasets, replay, compare | **done** |
-| P2 | Golden cases + human-reviewed regression | not started |
+| P2 | Real capture: Grafana adapter, Docker deployment, CI, runbook | in progress |
+| P3 | Golden cases + human-reviewed regression | not started |
 | P4 | Shadow mode against live infrastructure | not started |
 
 No vendor adapter (Grafana / Azure Monitor / Email) is written yet, and none will be until
@@ -246,8 +247,8 @@ The synthetic fixture proves the engine does what we designed. The Lab asks the
 different question: **does it do something useful to real traffic?**
 
 ```sh
-# 1. CAPTURE — point Grafana / Azure at a webhook source and let signals arrive.
-#    No vendor adapter needed; the webhook endpoint already exists.
+# 1. CAPTURE — create a source of type `grafana` (or `generic_webhook`) in the UI and
+#    point the Grafana contact point at its ingestion URL. See docs/pilot-runbook.md.
 
 # 2. Freeze what arrived into an immutable dataset
 cargo run -p ops-worker -- pilot dataset create infra-week-01 [source-name]
@@ -301,12 +302,17 @@ reasoner cannot tell local from cloud, which is the point of having the port.
 
 ### Not built yet, deliberately
 
-**Golden cases (P2).** A dataset with human-approved expected groupings. The
+**Real capture (P2).** The first frozen dataset from live Grafana traffic on the
+design partner's infrastructure. Everything below needs it. Plan:
+`docs/plans/2026-09-08-pilot-handoff.md`.
+
+**Golden cases (P3).** A dataset with human-approved expected groupings. The
 system proposes, the engineer corrects, and *that* becomes the oracle. A model
 must never write its own answer key.
 
-**Shadow mode (P4).** Needs real signals flowing alongside the existing
-workflow, which needs the design-partner interview first.
+**Shadow mode (P4).** Real signals flowing alongside the existing workflow, with
+the capture tenant processed live so the UI shows incidents as they happen.
+Needs P2 first.
 
 ## Checks
 
