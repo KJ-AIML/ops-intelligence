@@ -68,6 +68,11 @@ AI_ENABLED=false
 # AI_API_KEY=
 # AI_MODEL=claude-opus-5
 # AI_EFFORT=low
+
+# Address the UI prints as the ingestion URL. Must be reachable from Grafana.
+API_BASE_URL=http://localhost:8080
+# Where the server finds the built UI; unset means web/dist relative to the working directory.
+WEB_DIST_DIR=web/dist
 ```
 
 The credentials above are local-development only and must not be reused anywhere else.
@@ -80,6 +85,18 @@ cargo run -p ops-worker -- import pilot-data/synthetic-alerts-v1.csv
 cargo run -p ops-worker -- process
 cargo run -p ops-worker -- correlate
 ```
+
+### In Docker
+
+```sh
+docker compose up -d --build            # PostgreSQL + server (API and UI) on :8080
+docker compose run --rm worker pilot dataset list
+```
+
+Set `API_BASE_URL` to the address Grafana will use (for example
+`http://10.0.0.12:8080`) before starting, because it is what the UI prints as the
+ingestion URL. The database port is bound to loopback only. The worker is a
+one-shot tool under the `tools` profile, not a daemon.
 
 Migrations run automatically on startup, from an empty database upward.
 

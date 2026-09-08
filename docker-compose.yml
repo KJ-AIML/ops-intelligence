@@ -4,10 +4,12 @@ services:
     container_name: ops-intelligence-db
     environment:
       POSTGRES_USER: ops
-      POSTGRES_PASSWORD: ops_local_dev
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ops_local_dev}
       POSTGRES_DB: ops_intelligence
     ports:
-      - "55432:5432"
+      # Bound to loopback: the database is never reachable from the network,
+      # only from this host (for local cargo runs and pg_dump).
+      - "127.0.0.1:55432:5432"
     volumes:
       - ops-pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -15,6 +17,42 @@ services:
       interval: 3s
       timeout: 3s
       retries: 20
+    restart: unless-stopped
+
+  server:
+    image: ops-intelligence:local
+    build: .
+    container_name: ops-intelligence-server
+    environment:
+      DATABASE_URL: postgres://ops:${POSTGRES_PASSWORD:-ops_local_dev}@postgres:5432/ops_intelligence
+      DEFAULT_ORGANIZATION_SLUG: ${DEFAULT_ORGANIZATION_SLUG:-pilot-org}
+      # What the UI prints as the ingestion URL; must be reachable from Grafana.
+      API_BASE_URL: ${API_BASE_URL:-http://localhost:8080}
+      RUST_LOG: ${RUST_LOG:-info,sqlx=warn}
+      AI_ENABLED: "false"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # One-shot tool, not a daemon:  docker compose run --rm worker pilot dataset list
+  worker:
+    image: ops-intelligence:local
+    build: .
+    profiles: ["tools"]
+    entrypoint: ["ops-worker"]
+    environment:
+      DATABASE_URL: postgres://ops:${POSTGRES_PASSWORD:-ops_local_dev}@postgres:5432/ops_intelligence
+      DEFAULT_ORGANIZATION_SLUG: ${DEFAULT_ORGANIZATION_SLUG:-pilot-org}
+      RUST_LOG: ${RUST_LOG:-info,sqlx=warn}
+      AI_ENABLED: "false"
+    volumes:
+      - ./pilot-data:/app/pilot-data:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
 
 volumes:
   ops-pgdata:
