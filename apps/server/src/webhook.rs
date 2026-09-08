@@ -91,7 +91,12 @@ pub async fn ingest(
             )
         }
         SourceType::GenericWebhook => {
-            ops_source_webhook::extract_facts(&payload)?;
+            // Same visibility as the Grafana arm: a source posting bodies the
+            // engine cannot read must show up in our log, not only in theirs.
+            ops_source_webhook::extract_facts(&payload).map_err(|e| {
+                tracing::warn!(source = %source.name, error = %e, "webhook payload rejected");
+                e
+            })?;
             (
                 ops_source_webhook::CONTENT_TYPE,
                 vec![(ops_source_webhook::external_id_of(&payload), payload)],

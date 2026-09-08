@@ -1374,6 +1374,147 @@ git commit -m "Handoff: Grafana digest is not duplicated per alert; refused batc
 
 ---
 
+### Task 3c: No alert-count cap; log generic-webhook refusals; pin truncatedAlerts
+
+Added after the audit of 937fb42. Do this before Task 4.
+
+**Ruling on the 500-alert cap: remove it.** After Task 3b there are three bounds on one Grafana POST: the 1 MiB body limit, the 500-alert count cap, and the 32 MiB group-times-alerts expansion budget. Work out what each one stops. A realistic alert is 800 bytes to 1.5 KB, so a 1 MiB body holds roughly 700 to 1,300 of them; the body limit already bounds a real batch. An adversarial body of minimal 80-byte alerts holds about 14,000, which the expansion budget accepts (14,000 times a few hundred bytes of group is under 3 MB) and which costs 14,000 inserts on one request: slow, bounded, and only reachable with a valid 32-character token. The count cap therefore stops nothing the other two bounds do not, and the only real traffic it ever refuses is a fleet-wide outage of 500 to 1,300 hosts, whole, with a 400. That is the one notification the engine must not lose. Deletion over addition.
+
+**Files:**
+- Modify: `adapters/sources/grafana/src/lib.rs` (`MAX_ALERTS_PER_BATCH` and its check, the `MAX_BATCH_EXPANSION_BYTES` comment, tests)
+- Modify: `apps/server/src/webhook.rs` (`SourceType::GenericWebhook` arm)
+- Modify: `README.md` "Grafana" section
+- Modify: this plan, Task 8 runbook section 9 (already updated; the runbook is not written yet)
+
+**Interfaces:** unchanged.
+
+- [ ] **Step 1: Write the failing test**
+
+In the `tests` module of `adapters/sources/grafana/src/lib.rs`, replace the whole test `a_batch_at_the_cap_is_accepted_but_one_over_is_rejected` with:
+
+```rust
+    #[test]
+    fn a_fleet_wide_group_is_accepted_whole() {
+        // 1,200 alerts is about what a 1 MiB body holds at realistic alert
+        // sizes. A fleet-wide outage must arrive whole, not be refused for
+        // being large: it is the one notification that must not be lost.
+        let signals = split_batch(&batch_of(1_200)).unwrap();
+        assert_eq!(signals.len(), 1_200);
+        assert_eq!(
+            signals[1_199].external_id,
+            "fp-1199:firing:2026-09-08T09:42:10Z"
+        );
+    }
+```
+
+Also add, inside `every_alert_keeps_the_group_context_it_arrived_with`, after the `assert!(signal.payload["alert"].is_object());` line:
+
+```rust
+            // Load-bearing: the argument that dropping `message` loses nothing
+            // relies on Grafana truncating alerts[] BEFORE rendering the digest,
+            // and on the truncation count surviving into stored evidence.
+            assert_eq!(signal.payload["group"]["truncatedAlerts"], 0);
+```
+
+Run: `cargo test -p ops-source-grafana`
+Expected: `a_fleet_wide_group_is_accepted_whole` fails with `exceeding the cap`; the truncation assertion passes.
+
+- [ ] **Step 2: Remove the cap**
+
+Delete the `const MAX_ALERTS_PER_BATCH: usize = 500;` line together with its whole `// ponytail: deliberate bound ...` comment block, and delete this check inside `split_batch`:
+
+```rust
+    if alerts.len() > MAX_ALERTS_PER_BATCH {
+        return Err(DomainError::Validation(format!(
+            "grafana payload carries {} alerts, exceeding the cap of {MAX_ALERTS_PER_BATCH}",
+            alerts.len()
+        )));
+    }
+```
+
+Replace the comment block above `MAX_BATCH_EXPANSION_BYTES` with:
+
+```rust
+// There is deliberately no alert-count cap. The request body limit (1 MiB,
+// apps/server) bounds how many alerts one POST can carry, and this budget
+// bounds how much they can become once the group is attached to each. A count
+// cap on top of those only ever refused real fleet-wide outages whole, which
+// is the one notification that must not be lost.
+//
+// `split_batch` clones the group into every alert's payload. With the rendered
+// `message` digest excluded, a real group is labels, annotations, a title and
+// a few URLs: a few KB regardless of alert count, so even a thousand-alert
+// batch multiplies out to a few MB. 32 MiB is a safety net for bodies that are
+// not shaped like Grafana's, not a limit a real notification should ever meet.
+// If the server log ever shows "grafana batch rejected" for a real group, the
+// model above is wrong and this needs real numbers, not a bigger constant.
+const MAX_BATCH_EXPANSION_BYTES: usize = 32 * 1024 * 1024;
+```
+
+In the `tests` module, add near the top, after `use serde_json::json;`:
+
+```rust
+    /// A batch the size of a large real notification group. Not a limit;
+    /// a probe size shared by the expansion and digest tests.
+    const FULL_BATCH: usize = 500;
+```
+
+Then replace every remaining `MAX_ALERTS_PER_BATCH` in the tests module with `FULL_BATCH` (the `batch_of` and `batch_with_padded_group` doc comments, `a_batch_whose_group_times_alert_count_exceeds_the_expansion_budget_is_rejected`, `a_realistic_batch_stays_within_the_expansion_budget`, `the_rendered_digest_is_not_duplicated_into_every_alert`, `a_full_cap_batch_with_a_grafana_sized_digest_is_accepted`). Change the `batch_of` doc comment to "used to probe batch-size behaviour", and rename `a_full_cap_batch_with_a_grafana_sized_digest_is_accepted` to `a_large_batch_with_a_grafana_sized_digest_is_accepted`.
+
+Run: `cargo test -p ops-source-grafana`
+Expected: all pass. The expansion rejection test still rejects, because 500 alerts times a 100 KB padded group is 50 MB.
+
+- [ ] **Step 3: Log generic-webhook refusals**
+
+In `apps/server/src/webhook.rs`, replace the `SourceType::GenericWebhook` arm with:
+
+```rust
+        SourceType::GenericWebhook => {
+            // Same visibility as the Grafana arm: a source posting bodies the
+            // engine cannot read must show up in our log, not only in theirs.
+            ops_source_webhook::extract_facts(&payload).map_err(|e| {
+                tracing::warn!(source = %source.name, error = %e, "webhook payload rejected");
+                e
+            })?;
+            (
+                ops_source_webhook::CONTENT_TYPE,
+                vec![(ops_source_webhook::external_id_of(&payload), payload)],
+            )
+        }
+```
+
+Run: `cargo build -p ops-server && cargo clippy -p ops-server --all-targets -- -D warnings`
+Expected: clean.
+
+- [ ] **Step 4: README precision**
+
+In the README "Grafana" section, replace the sentence beginning "A group with more than 500 alerts" with:
+
+```markdown
+There is no alert-count cap: the 1 MiB request body limit bounds a batch, and a
+fleet-wide outage must arrive whole. A batch whose group context multiplied
+across its alerts would pass 32 MiB is refused with a 400 and logged as
+`grafana batch rejected`; Grafana retries a few times and then discards the
+notification, so that log line means a group was lost.
+```
+
+- [ ] **Step 5: Manual check**
+
+With the server running and `TOKEN` from a Grafana source, reuse the Task 3b Step 5 script with `range(1200)` instead of `range(400)`.
+
+Expected: `202` with `"inserted":1200`. Before this task the same request returned `400` with `exceeding the cap` in the error.
+
+- [ ] **Step 6: Checks and commit**
+
+Run the four workspace checks.
+
+```bash
+git add adapters/sources/grafana/src/lib.rs apps/server/src/webhook.rs README.md docs/plans/2026-09-08-pilot-handoff.md
+git commit -m "Handoff: no alert-count cap on Grafana batches; generic webhook refusals are logged; truncatedAlerts pinned"
+```
+
+---
+
 ### Task 4: Failed signals are visible in the Operations View
 
 **Files:**
@@ -2014,11 +2155,14 @@ golden cases for phase P3.
 
 - Request bodies over 1 MiB are rejected. Grafana groups rarely approach this;
   if `413` appears in the server log, tell the author.
-- A notification group with more than 500 alerts, or one whose stored size would
-  pass 32 MiB, is refused and logged as `grafana batch rejected`. Grafana retries,
-  then gives up, so that group is lost. If the line appears in
-  `docker compose logs server`, tell the author the same day: it means a real
-  storm was larger than the engine's ceiling.
+- There is no limit on how many alerts one notification may carry. A batch whose
+  group context multiplied across its alerts would pass 32 MiB is refused and
+  logged as `grafana batch rejected`; Grafana retries, then gives up, so that
+  group is lost. If the line appears in `docker compose logs server`, tell the
+  author the same day: it means a real notification was shaped unlike anything
+  the engine expects.
+- A generic-webhook body the engine cannot read is refused and logged as
+  `webhook payload rejected`. Same instruction.
 - Which alert labels mean environment, service and resource are fixed guesses
   (`environment`/`env`, `service`/`job`/`app`, `instance`/`host`/`resource`/`pod`).
   Real data will correct them; that is expected.
@@ -2119,6 +2263,7 @@ git commit -m "Handoff: README reflects the Grafana adapter, Docker run path, an
 | 2 | 37f897a, 8af688d | executor added `MAX_ALERTS_PER_BATCH = 500`, not in the plan |
 | 3 | 2f710bd, b712ac2 | executor added `MAX_BATCH_EXPANSION_BYTES = 32 MiB`; UI half verified in a browser by the author on a clean database |
 | audit | | 2026-09-08, read-only: gate reproduced (100 workspace tests, 3 database tests, fmt, clippy `-D warnings`, web typecheck), tree clean. b712ac2 meets its stated intent but assumes a few-KB group; Grafana's `message` digest breaks that assumption, so Task 3b was added. |
-| 3b | | pending; do before Task 4 |
+| 3b | 937fb42 | as planned; the plan itself committed alongside. Audit 2026-09-08: gate reproduced (102 workspace tests, 3 database tests, fmt, clippy), diff matches the plan line for line. Executor's growth analysis of the remaining group fields (commonLabels and commonAnnotations are intersections, title carries a count) checked and agreed. |
+| 3c | | pending; do before Task 4. Removes the alert-count cap on the reasoning written in the task. |
 
-Executor's deferred-minor ledger, kept for the final review: partial mid-batch database failure commits earlier rows and returns 500 without touching last-seen (Grafana's retry deduplicates); the Task 2 minors as recorded by the executing session. The `_ =>` catch-all and the `truncatedAlerts` read on every payload are closed by Task 3b.
+Executor's deferred-minor ledger, kept for the final review: partial mid-batch database failure commits earlier rows and returns 500 without touching last-seen (Grafana's retry deduplicates); the truncation warning fires before persistence, so it can name a group a later database failure never stored; the Task 2 minors as recorded by the executing session. Closed by Task 3b: the `_ =>` catch-all and the `truncatedAlerts` read on every payload. Closed by Task 3c: silent generic-webhook refusals, the unpinned `truncatedAlerts` preservation, and the README's imprecise description of the bound.

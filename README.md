@@ -170,8 +170,11 @@ idempotency key, so Grafana's repeat notifications collapse while resolutions an
 re-fires do not.
 
 Grafana's rendered `message` digest is not stored; it is a rendering of `alerts[]`,
-which is stored in full. A group with more than 500 alerts, or one whose stored
-size would exceed 32 MiB, is refused and logged as `grafana batch rejected`.
+which is stored in full. There is no alert-count cap: the 1 MiB request body limit
+bounds a batch, and a fleet-wide outage must arrive whole. A batch whose group
+context multiplied across its alerts would pass 32 MiB is refused with a 400 and
+logged as `grafana batch rejected`; Grafana retries a few times and then discards
+the notification, so that log line means a group was lost.
 
 ```sh
 curl -X POST localhost:8080/api/v1/sources -H 'content-type: application/json' \
