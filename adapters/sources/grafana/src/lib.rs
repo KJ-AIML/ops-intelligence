@@ -30,6 +30,18 @@ const ZERO_TIME: &str = "0001-01-01T00:00:00Z";
 // 35).
 const MAX_ALERTS_PER_BATCH: usize = 500;
 
+// `split_batch` clones the group into every alert's payload, so the count cap
+// above bounds *how many* clones happen but not their combined size: a body
+// that spends nearly all of `MAX_BODY_BYTES` on one huge group field and the
+// rest on hundreds of near-empty alerts still multiplies that huge group by
+// the alert count. A real Grafana notification group (labels, annotations, a
+// handful of URLs) is a few KB at most, so even a full-cap batch of 500 alerts
+// realistically multiplies out to a few MB. 32 MiB leaves an order of
+// magnitude of headroom above that realistic case while sitting far below the
+// ~500 MB a group-heavy adversarial body can otherwise produce from one
+// MAX_BODY_BYTES-sized request.
+const MAX_BATCH_EXPANSION_BYTES: usize = 32 * 1024 * 1024;
+
 /// One alert lifted out of a Grafana notification batch, ready to become a RawSignal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AlertSignal {
@@ -66,6 +78,23 @@ pub fn split_batch(body: &Value) -> Result<Vec<AlertSignal>, DomainError> {
         .filter(|(key, _)| key.as_str() != "alerts")
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
+
+    // Measure the group once, not per alert: the clone loop below is what
+    // actually pays this cost `alerts.len()` times, so the product must be
+    // bounded before that loop runs at all.
+    let group_size = serde_json::to_string(&group)
+        .map(|s| s.len())
+        .map_err(|e| {
+            DomainError::Validation(format!("grafana payload group could not be measured: {e}"))
+        })?;
+    let expansion = group_size.saturating_mul(alerts.len());
+    if expansion > MAX_BATCH_EXPANSION_BYTES {
+        return Err(DomainError::Validation(format!(
+            "grafana payload would expand to about {expansion} bytes ({group_size}-byte group \
+             cloned across {} alerts), exceeding the expansion budget of {MAX_BATCH_EXPANSION_BYTES} bytes",
+            alerts.len()
+        )));
+    }
 
     alerts
         .iter()
@@ -395,5 +424,34 @@ mod tests {
             message.contains(&MAX_ALERTS_PER_BATCH.to_string()),
             "got: {message}"
         );
+    }
+
+    /// `batch_of(n)` plus one group-level field padded to roughly `group_bytes`,
+    /// used to probe the expansion-budget check independently of the
+    /// alert-count cap (which stays satisfied at `n <= MAX_ALERTS_PER_BATCH`).
+    fn batch_with_padded_group(n: usize, group_bytes: usize) -> Value {
+        let mut body = batch_of(n);
+        body["padding"] = json!("x".repeat(group_bytes));
+        body
+    }
+
+    #[test]
+    fn a_batch_whose_group_times_alert_count_exceeds_the_expansion_budget_is_rejected() {
+        // A full-cap batch (500 alerts) with a group padded past 100 KB
+        // multiplies out to ~50 MB, comfortably clearing the 32 MiB budget
+        // while its alert count alone stays within MAX_ALERTS_PER_BATCH.
+        let huge = batch_with_padded_group(MAX_ALERTS_PER_BATCH, 100_000);
+        let err = split_batch(&huge).unwrap_err().to_string();
+        assert!(err.contains("expansion budget"), "got: {err}");
+    }
+
+    #[test]
+    fn a_realistic_batch_stays_within_the_expansion_budget() {
+        // A few KB of group context (labels, annotations, URLs) across a
+        // full-cap batch of alerts is the shape of a real Grafana
+        // notification, and it multiplies out to about 1 MB — well inside
+        // the budget.
+        let realistic = batch_with_padded_group(MAX_ALERTS_PER_BATCH, 2_000);
+        assert!(split_batch(&realistic).is_ok());
     }
 }
