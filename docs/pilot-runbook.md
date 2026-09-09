@@ -113,6 +113,16 @@ The `-T` matters: without it `docker compose exec` allocates a terminal and
 appends a carriage return, which `$(...)` does not strip, so the value would
 end up with an invisible carriage return on the end.
 
+If the value you just read back contains `localhost` or `127.0.0.1`, stop:
+that is the compose default when nobody exported `API_BASE_URL` before the
+stack was created, not this host's real address, and no off-host Grafana can
+ever reach it. A source created against it still returns a perfectly normal
+`201` with an `ingest_url` in it — nothing about the response tells you it is
+wrong. Correct it before creating any source: export the real address instead
+(the one from section 1, not `localhost`), then recreate the `server`
+container so it picks it up, `docker compose up -d server`, and read it back
+again to confirm.
+
 Not every command below actually needs these re-exported, and it matters
 which:
 
@@ -128,6 +138,20 @@ which:
   re-exported it before one of these, the new container silently gets the
   default instead and fails to authenticate — re-export before any `run` or
   `up`, not before every command.
+
+Section 3 asked you to write down the source name — if that got lost too,
+recover it from the API instead of guessing from the Sources page:
+
+```sh
+curl -s http://localhost:8080/api/v1/sources
+```
+
+Every source returned has `name`, `source_type` and `last_seen_at`. The
+capture source is the one with `source_type` `grafana` and a recent
+`last_seen_at`; a source that was created but never wired into Grafana shows
+`last_seen_at` of `null`. If more than one `grafana` source has recent
+traffic, stop and ask rather than guess — freezing the wrong one in section 6
+does not fail loudly, it just builds a small, wrong dataset (see section 6).
 
 Then:
 
@@ -195,14 +219,21 @@ Then (Alerting → Notification policies):
 
 ## 5. During the capture (once a day, two minutes)
 
-- Overview page, first line: the signal count should be higher than yesterday.
-  Events and incidents stay at zero for the whole capture; that is by design, not
-  a fault. Nothing is analysed until the replay in section 6.
+- Overview page, first line: the signal count should be higher than
+  yesterday — write today's number down before you close the tab; it is the
+  only record of "yesterday" the next person to check (maybe a different
+  shift) will have. Events and incidents stay at zero for the whole capture on
+  a host used only for this pilot; that is by design, not a fault, because
+  nothing is analysed until the replay in section 6. A non-zero count here
+  means one of two things, not a broken rule: either the host already had
+  data on it before the capture started, or someone ran `process` or
+  `correlate` against the live tenant despite the warning below.
 - Sources page: "Last seen" is recent. If it is more than a few hours old on a
   normal day, check `docker compose ps` and the firewall.
 - `docker compose logs server | grep -i -E "truncated|rejected|exceeds"`: any line
   here means Grafana sent something the engine could not take whole. Section 9
-  says what each one means; note it for the review session.
+  says what each one means; note it for the review session. No output — grep
+  exits non-zero — is the healthy result; it does not mean the command failed.
 
 Do not run `process` or `correlate` against the live tenant during the capture.
 The capture tenant stays raw; the analysis happens by replay (section 6). This is
@@ -241,9 +272,14 @@ Check the `week-01` row in that listing: `SIGNALS` should look like a real
 week of alerts, not a handful. If the source named in section 3 never actually
 received any traffic — wrong name, or created but never wired into Grafana —
 `dataset create` refuses outright with `no captured signals matched; dataset
-not created` rather than silently building an empty dataset. Either way, sort
-that out here; do not continue to the replay below on a dataset you have not
-confirmed.
+not created` rather than silently building an empty dataset. That automatic
+refusal only catches a *zero* match, though: a wrong-but-plausible source
+name — a leftover test source that did receive a handful of pings, say —
+freezes successfully with no error and a small, wrong `SIGNALS` count.
+Reading that number is therefore the real check here, not a formality; the
+automatic refusal is a backstop, not a substitute for looking. Either way,
+sort that out here; do not continue to the replay below on a dataset you have
+not confirmed.
 
 Replay it twice and confirm the two runs agree:
 
