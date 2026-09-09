@@ -36,6 +36,11 @@ services:
       postgres:
         condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
 
   # One-shot tool, not a daemon:  docker compose run --rm worker pilot dataset list
   worker:

@@ -14,15 +14,17 @@ COPY crates ./crates
 COPY adapters ./adapters
 COPY apps ./apps
 COPY migrations ./migrations
-RUN cargo build --release -p ops-server -p ops-worker
+RUN cargo build --release --locked -p ops-server -p ops-worker
 
 FROM debian:bookworm-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl \
- && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --system --no-create-home --shell /usr/sbin/nologin app
 WORKDIR /app
 COPY --from=build /src/target/release/ops-server /src/target/release/ops-worker /usr/local/bin/
 COPY --from=web /web/dist ./web/dist
+USER app
 ENV APP_HOST=0.0.0.0 \
     APP_PORT=8080 \
     WEB_DIST_DIR=/app/web/dist

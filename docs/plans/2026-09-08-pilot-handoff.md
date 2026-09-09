@@ -2008,6 +2008,81 @@ git commit -m "Handoff: Dockerfile and compose run the whole stack; database bou
 
 ---
 
+### Task 6b: Image hardening: locked build, non-root, server healthcheck
+
+Added after the audit of Tasks 4 to 6. Three of the executor's deferred minors are cheap enough to close now and matter on a host someone else runs.
+
+**Files:**
+- Modify: `Dockerfile` (build stage `cargo build` line; runtime stage user)
+- Modify: `docker-compose.yml` (`server` service healthcheck)
+
+**Interfaces:** unchanged. The image runs as user `app`; `docker compose ps` reports the server's health.
+
+- [ ] **Step 1: Locked build**
+
+In `Dockerfile`, change the build line to:
+
+```dockerfile
+RUN cargo build --release --locked -p ops-server -p ops-worker
+```
+
+`rust:1-bookworm` floats; `--locked` makes a lockfile drift fail the build instead of silently resolving new versions in the image only.
+
+- [ ] **Step 2: Non-root runtime**
+
+In the runtime stage, replace the `apt-get` RUN, the `COPY --from=web` line and the `ENV` block with:
+
+```dockerfile
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --system --no-create-home --shell /usr/sbin/nologin app
+WORKDIR /app
+COPY --from=build /src/target/release/ops-server /src/target/release/ops-worker /usr/local/bin/
+COPY --from=web /web/dist ./web/dist
+USER app
+ENV APP_HOST=0.0.0.0 \
+    APP_PORT=8080 \
+    WEB_DIST_DIR=/app/web/dist
+```
+
+Nothing in the server or worker writes to disk, and 8080 is an unprivileged port, so the process needs no permissions beyond reading its own files.
+
+- [ ] **Step 3: Server healthcheck**
+
+In `docker-compose.yml`, under the `server` service after `restart: unless-stopped`, add:
+
+```yaml
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+```
+
+This is what `curl` in the image is for. It does not restart anything on its own; it makes `docker compose ps` show `healthy` or `unhealthy`, which is the daily check in the runbook.
+
+- [ ] **Step 4: Verify**
+
+```sh
+docker compose up -d --build
+docker compose ps
+docker compose exec server id -u
+docker compose run --rm worker pilot dataset list
+curl -s localhost:8080/health/ready
+```
+
+Expected: the server shows `(healthy)` within about a minute; `id -u` prints a non-zero uid; the dataset list still works; readiness returns `{"status":"ready"}`. Then confirm the runbook's dev residue is untouched: `curl -s localhost:8080/api/v1/sources | grep -c grafana-live` prints `1`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add Dockerfile docker-compose.yml
+git commit -m "Handoff: locked release build, non-root image, server healthcheck"
+```
+
+---
+
 ### Task 7: CI gate
 
 **Files:**
@@ -2330,6 +2405,8 @@ golden cases for phase P3.
 
 Ask a colleague who has not seen the repo to run sections 2, 3 and 6 against a scratch host using the fixture instead of Grafana. Fix every step they stumble on. This step is the deliverable; do not skip it.
 
+An acceptable first pass, to be done before the human run: dispatch a fresh subagent that has no repository context and is given only `docs/pilot-runbook.md`, and have it attempt sections 2, 3 and 6 against a scratch database, reporting every point where the document was ambiguous, wrong, or assumed knowledge. Fix those. The human run still happens, at the real handoff; record where your teammate stumbled in `docs/pilot-01-evaluation.md`, since that is evidence about the document, not about them.
+
 - [ ] **Step 4: Commit**
 
 ```bash
@@ -2347,6 +2424,8 @@ git commit -m "Handoff: pilot runbook for the design partner; replay prints its 
 - [ ] **Step 1: Status and layout**
 
 In the README "Grafana" section, the sentence calling 2.5 KB "the fattest measured alert shape" is wrong: the measured fat shape is about 1.9 KB with its share of the digest, and 2.5 KB is the margin the `Max alerts` arithmetic uses. Reword it to say so, with both numbers.
+
+In "Running it", the paragraph "Migrations run automatically on startup" and the "Expected output on a clean database" block describe the `cargo run -p ops-worker -- import` command, but the "In Docker" subsection was inserted between them and that command, so they now read as compose output. Move the "In Docker" subsection below the whole import, process and correlate explanation, immediately above the "## API" heading.
 
 In the status table, change the P2 row to:
 
@@ -2422,5 +2501,10 @@ git commit -m "Handoff: README reflects the Grafana adapter, Docker run path, an
 | 3b | 937fb42 | as planned; the plan itself committed alongside. Audit 2026-09-08: gate reproduced (102 workspace tests, 3 database tests, fmt, clippy), diff matches the plan line for line. Executor's growth analysis of the remaining group fields (commonLabels and commonAnnotations are intersections, title carries a count) checked and agreed. |
 | 3c | e46209b, 3d8d2bc, c843bf2 | cap removed as planned. Executor found the task's premise wrong: the digest is in the request body even though it is not stored, so 1 MiB admits 540 to 815 alerts, not 700 to 1,300; and a 413 from the body-limit layer was silent at the default log level. Fixed with measured numbers and a one-warn middleware. Audit 2026-09-08: gate reproduced (102 workspace tests, 3 database tests, fmt, clippy), diffs read, arithmetic agreed. |
 | 3d | f115efc, b5ab8d3 | body limit raised, `Max alerts` documented, large-batch regime pinned. Executor measured all four numbers the task asserts before dispatching; all held. Found that axum's `Json` extractor carries its own 2 MiB default, so the raise was a no-op until `DefaultBodyLimit::disable()`; found that the 413 warning and the trace span both logged the literal path, which on the ingest route is the token; fixed both with `MatchedPath` and pinned the effective limit with a router-level test. Audit 2026-09-09: gate reproduced (105 workspace tests, 3 database tests, fmt, clippy), diffs read, layer order and extension availability checked. |
+| 4 | e7fc3a1, 71db455 | as planned; executor widened the stat grid, which the plan had not noticed would wrap at seven tiles. |
+| 5 | 7c84284, e40d9fa | fallback registered before the layer block as rewritten. Executor found that `ServeDir::not_found_service` stamps a 404 status over the index.html it serves, so every deep link was a 404 with the right body, invisible to the plan's `head -c 60` checks; fixed with `ServeDir::fallback` plus a nested `/assets` service so missing assets still 404, and an `/api/{*rest}` catch-all so stale API paths do not get HTML. Three router tests pin it. |
+| 6 | 78e8c29, 0a57e9d | as planned, plus README fixes: the database password and its initdb-only trap, the open 8080 port stated plainly, and the compose-versus-cargo collision on 8080. |
+| audit | | 2026-09-09: gate reproduced (108 workspace tests, 3 database tests, fmt, clippy, web typecheck). Live probes against the running image: `/`, `/incidents`, `/deep/unknown` 200 HTML; a real asset 200 JavaScript; `/assets/nope.js` 404; API 200 JSON; health and readiness 200; summary carries `failed_signals`. Task 6b added for the three cheap hardening items. |
+| 6b | | pending; do before Task 7. |
 
-Executor's deferred-minor ledger, kept for the final review: partial mid-batch database failure commits earlier rows and returns 500 without touching last-seen (Grafana's retry deduplicates); the truncation warning fires before persistence, so it can name a group a later database failure never stored; the Task 2 minors as recorded by the executing session. Closed by Task 3b: the `_ =>` catch-all and the `truncatedAlerts` read on every payload. Closed by Task 3c: silent generic-webhook refusals, the unpinned `truncatedAlerts` preservation, and the README's imprecise description of the bound. Closed by Task 3d: no test in the above-500 regime, and the two "full-cap" test comments. Informational, kept: per-request insert count now scales with the body limit, a few thousand sequential inserts at most, seconds on the pilot host; revisit only if Grafana's webhook timeout is ever hit. From Task 3d, kept: the 413 warning's message says "ingest limit" on every route; the `LARGE_BATCH` test comment describes a body-limit regime the adapter crate cannot exercise; `http-body-util` is pinned in the server crate rather than the workspace table. Carried into Task 5: the fallback must be registered before the layer block (now written into that task). Carried into Task 9: the README's "fattest measured" wording.
+Executor's deferred-minor ledger, kept for the final review: partial mid-batch database failure commits earlier rows and returns 500 without touching last-seen (Grafana's retry deduplicates); the truncation warning fires before persistence, so it can name a group a later database failure never stored; the Task 2 minors as recorded by the executing session. Closed by Task 3b: the `_ =>` catch-all and the `truncatedAlerts` read on every payload. Closed by Task 3c: silent generic-webhook refusals, the unpinned `truncatedAlerts` preservation, and the README's imprecise description of the bound. Closed by Task 3d: no test in the above-500 regime, and the two "full-cap" test comments. Informational, kept: per-request insert count now scales with the body limit, a few thousand sequential inserts at most, seconds on the pilot host; revisit only if Grafana's webhook timeout is ever hit. From Task 3d, kept: the 413 warning's message says "ingest limit" on every route; the `LARGE_BATCH` test comment describes a body-limit regime the adapter crate cannot exercise; `http-body-util` is pinned in the server crate rather than the workspace table. Carried into Task 5: the fallback must be registered before the layer block (done in 7c84284). Carried into Task 9: the README's "fattest measured" wording, and the "In Docker" subsection's position. From Tasks 4 to 6, kept: no dependency-caching layer in the Dockerfile (build speed only); a bare `/api` with nothing after it reaches the SPA shell (the `/api/{*rest}` catch-all needs a segment). Closed by Task 6b: `--locked` on the release build, the image running as root, and `curl` installed for a healthcheck that did not exist.
