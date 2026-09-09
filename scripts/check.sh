@@ -18,7 +18,8 @@ fi
 ( cd web && npm ci --no-audit --no-fund && npm run typecheck && npm run build )
 
 if command -v docker >/dev/null 2>&1; then
-  docker build -q . >/dev/null && echo "docker: image builds"
+  docker build -q . >/dev/null
+  echo "docker: image builds"
 else
   echo "docker not found: skipped the image build"
 fi
