@@ -236,7 +236,33 @@ Then (Alerting → Notification policies):
    your usual channel. If you did not, delete the nested policy immediately and tell
    the author; do not proceed.
 
+Then tell the author which values your alerts' `severity` label takes (for
+example `critical`, `warning`, `page`, `P1`). The engine refuses to guess what a
+severity word means, so an alert whose value is not in its table is stored but
+produces no event until the table is updated. The day-one check in section 5
+shows exactly which values, if any, need adding.
+
 ## 5. During the capture (once a day, two minutes)
+
+**Day one, once real alerts have arrived** (the Sources page shows a recent
+"Last seen"): run one smoke replay, so a capture the engine cannot read is found
+today instead of on day five. Use the source name from section 3.
+
+```sh
+docker compose run --rm worker pilot dataset create day-01 REPLACE_WITH_THE_SOURCE_NAME_FROM_SECTION_3
+docker compose run --rm worker pilot replay day-01 smoke
+```
+
+Expected: an `events` line ending in `(0 failed)`. If the failed count is not
+zero, list the reasons and send them to the author the same day:
+
+```sh
+docker compose exec -T postgres psql -U ops -d ops_intelligence -c \
+  "SELECT processing_error, COUNT(*) FROM raw_signals WHERE processing_status = 'failed' GROUP BY 1 ORDER BY 2 DESC"
+```
+
+The capture continues regardless; nothing here touches it. The author fixes
+the mapping on their side before the final replay in section 6.
 
 - Overview page, first line: the signal count should be higher than
   yesterday — write today's number down before you close the tab; it is the
