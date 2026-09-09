@@ -103,10 +103,14 @@ a source created with the wrong address still returns a perfectly normal
 `201` with an `ingest_url` in it, and the only symptom is that Grafana,
 running on a different host, can never reach that URL. Then:
 
+The `-T` matters: without it `docker compose exec` allocates a terminal and
+appends a carriage return, which `$(...)` does not strip, so the value would
+end up with an invisible carriage return on the end.
+
 ```sh
-export API_BASE_URL=$(docker compose exec server printenv API_BASE_URL)
+export API_BASE_URL=$(docker compose exec -T server printenv API_BASE_URL)
 export THIS_HOST_IP=REPLACE_WITH_THE_ADDRESS_FROM_API_BASE_URL_ABOVE
-export POSTGRES_PASSWORD=$(docker compose exec postgres printenv POSTGRES_PASSWORD)
+export POSTGRES_PASSWORD=$(docker compose exec -T postgres printenv POSTGRES_PASSWORD)
 ```
 
 Not every command below actually needs these re-exported, and it matters
