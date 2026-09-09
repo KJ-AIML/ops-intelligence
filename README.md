@@ -397,6 +397,9 @@ Needs P2 first.
 
 ## Checks
 
+`sh scripts/check.sh` runs the whole gate; `.github/workflows/ci.yml` runs the same
+gate plus the PostgreSQL acceptance tests on every push once the repo has a remote.
+
 ```sh
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
