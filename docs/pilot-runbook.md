@@ -52,8 +52,10 @@ docker compose ps
 - If that command fails (no such file, no checkout yet) or its output is just
   the header row with nothing under it, this is a fresh start — continue with
   "First time on this host" below.
-- If it lists containers (`postgres`, `server`), skip straight to "Already
-  running" below. Do not clone on top of an existing checkout or run
+- If it lists containers — look in the leftmost NAME column for
+  `ops-intelligence-db` and `ops-intelligence-server` (the SERVICE column
+  next to it shows the shorter `postgres` and `server`) — skip straight to
+  "Already running" below. Do not clone on top of an existing checkout or run
   `--build` without reading that section first — a capture may be in progress.
 
 ### First time on this host
@@ -71,23 +73,70 @@ Expected: `{"status":"ok"}`. From your workstation, open `http://` followed by
 your real host address and `:8080/` (not the literal text `$THIS_HOST_IP`).
 You should see the Overview page with zeros.
 
-Write down the value you used for `THIS_HOST_IP` and the password you picked;
-you need to `export` them again in any new shell before running a compose
-command — nothing persists them for you.
+Write down the value you used for `THIS_HOST_IP` and the password you picked
+— nothing persists them for you. You need them again in any new shell before
+running `docker compose run` or `docker compose up` (they create containers
+and substitute these values in at that moment); `docker compose exec` and
+`docker compose ps` do not need them, since those act on containers that
+already exist. If you ever lose the values — including if you are not the
+person who started the capture — "Already running" below shows how to recover
+them from the running containers instead of guessing.
 
 ### Already running
 
-The stack came up before — a reboot, or you are back for section 5 or 6.
-Re-export `THIS_HOST_IP`, `API_BASE_URL` and `POSTGRES_PASSWORD` in this shell
-using the same values as when you first ran "First time on this host", then:
+The stack came up before — a reboot, a shift change, or you are back for
+section 5 or 6, and are not necessarily the person who ran "First time on
+this host". If you still have the original `THIS_HOST_IP`, `API_BASE_URL` and
+`POSTGRES_PASSWORD` values, re-export them in this shell and skip to the list
+below. If you do not, recover them from the running containers rather than
+guessing:
+
+```sh
+docker compose exec server printenv API_BASE_URL
+docker compose exec postgres printenv POSTGRES_PASSWORD
+```
+
+`API_BASE_URL` already contains the host address that was used when the stack
+was started, so its output is the authoritative answer to "what was
+`THIS_HOST_IP`" — read the address back out of it. Do not guess `localhost`:
+a source created with the wrong address still returns a perfectly normal
+`201` with an `ingest_url` in it, and the only symptom is that Grafana,
+running on a different host, can never reach that URL. Then:
+
+```sh
+export API_BASE_URL=$(docker compose exec server printenv API_BASE_URL)
+export THIS_HOST_IP=REPLACE_WITH_THE_ADDRESS_FROM_API_BASE_URL_ABOVE
+export POSTGRES_PASSWORD=$(docker compose exec postgres printenv POSTGRES_PASSWORD)
+```
+
+Not every command below actually needs these re-exported, and it matters
+which:
+
+- `docker compose exec ...` (used again in section 5, and for the backup in
+  section 6) attaches to a container that is already running. Nothing is
+  substituted when you run it, so it works whether or not anything is
+  exported in this shell — this is exactly why the recovery commands above
+  work even with no `THIS_HOST_IP`, `API_BASE_URL` or `POSTGRES_PASSWORD` set.
+- `docker compose run --rm worker ...` and `docker compose up ...` **create**
+  a container, and compose substitutes `${POSTGRES_PASSWORD:-ops_local_dev}`
+  into it at that moment, from whatever is or is not exported in your current
+  shell. If the database was set up with a custom password and you have not
+  re-exported it before one of these, the new container silently gets the
+  default instead and fails to authenticate — re-export before any `run` or
+  `up`, not before every command.
+
+Then:
 
 - To confirm it is healthy without changing anything: `docker compose ps` —
-  both containers should say `healthy`. That is normally all you need here.
+  look at the NAME column; you should see `ops-intelligence-db` and
+  `ops-intelligence-server` (the SERVICE column shows the shorter `postgres`
+  and `server`), both `healthy`. That is normally all you need here.
 - Only if the author sent you a new checkout to pick up: `docker compose up -d
-  --build`. This recreates the `server` container, so ingestion is unavailable
-  for the few seconds that takes; Grafana retries and nothing is lost, exactly
-  as in section 5. It does not touch anything stored in the `ops-pgdata`
-  volume.
+  --build`. This recreates the `server` container, so ingestion is
+  unavailable for the few seconds that takes; Grafana retries a failed
+  delivery several times before giving up (the same retry behaviour section 7
+  relies on when you pause a source), so nothing is lost. It does not touch
+  anything stored in the `ops-pgdata` volume.
 - Do not run `docker compose down` or `docker compose down -v` here — see
   section 7 for what those actually do and when they belong.
 
@@ -215,9 +264,11 @@ This is safe, and here is exactly why, so you do not have to take it on faith:
   container starts. It only decides which tenant the product's API and UI
   read through; it has no effect on ingestion at all.
 - Recreating the `server` container to flip it takes a few seconds, during
-  which any incoming POST from Grafana fails; Grafana retries, exactly as in
-  section 5, so nothing is lost. You are also doing this after the capture has
-  already ended, so there is nothing left to interrupt.
+  which any incoming POST from Grafana fails; Grafana retries a failed
+  delivery several times before giving up (the same retry behaviour section 7
+  relies on when you pause a source), so nothing is lost. You are also doing
+  this after the capture has already ended, so there is nothing left to
+  interrupt.
 - While pointed at the replay tenant, the Sources page will look empty — that
   tenant has no sources of its own, only the replayed signals, incidents and
   insights. That is expected, not something you broke; go to the Overview and
