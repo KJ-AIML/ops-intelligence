@@ -225,8 +225,8 @@ included. Above it the request is refused whole with a 413, logged as
 `request body exceeds the ingest limit`; Grafana retries a few times and then
 discards the notification, so that log line means a group was lost.
 
-Set **Max alerts** on the Grafana contact point so that can never happen. The
-fattest measured alert shape costs about 1.9 KB with its share of the digest;
+Set **Max alerts** on the Grafana contact point so that can never happen. That
+same fat shape, once its share of the digest is folded in, costs about 1.9 KB;
 `Max alerts` at 1,000 uses a deliberately conservative 2.5 KB per alert, so a
 body is at most about 2.5 MB. Beyond 1,000 alerts Grafana
 truncates the group itself before sending; the truncation is warn-logged
