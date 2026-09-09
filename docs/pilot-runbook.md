@@ -103,15 +103,15 @@ a source created with the wrong address still returns a perfectly normal
 `201` with an `ingest_url` in it, and the only symptom is that Grafana,
 running on a different host, can never reach that URL. Then:
 
-The `-T` matters: without it `docker compose exec` allocates a terminal and
-appends a carriage return, which `$(...)` does not strip, so the value would
-end up with an invisible carriage return on the end.
-
 ```sh
 export API_BASE_URL=$(docker compose exec -T server printenv API_BASE_URL)
 export THIS_HOST_IP=REPLACE_WITH_THE_ADDRESS_FROM_API_BASE_URL_ABOVE
 export POSTGRES_PASSWORD=$(docker compose exec -T postgres printenv POSTGRES_PASSWORD)
 ```
+
+The `-T` matters: without it `docker compose exec` allocates a terminal and
+appends a carriage return, which `$(...)` does not strip, so the value would
+end up with an invisible carriage return on the end.
 
 Not every command below actually needs these re-exported, and it matters
 which:
@@ -195,13 +195,14 @@ Then (Alerting → Notification policies):
 
 ## 5. During the capture (once a day, two minutes)
 
+- Overview page, first line: the signal count should be higher than yesterday.
+  Events and incidents stay at zero for the whole capture; that is by design, not
+  a fault. Nothing is analysed until the replay in section 6.
 - Sources page: "Last seen" is recent. If it is more than a few hours old on a
   normal day, check `docker compose ps` and the firewall.
-- Overview page: the "failed signals" tile. A non-zero count means some payloads
-  could not be understood. Not an emergency: they are stored and will be handled at
-  replay. Note the number.
-- `docker compose logs server | grep -i truncated`: Grafana drops alerts from very
-  large groups; a line here means it happened.
+- `docker compose logs server | grep -i -E "truncated|rejected|exceeds"`: any line
+  here means Grafana sent something the engine could not take whole. Section 9
+  says what each one means; note it for the review session.
 
 Do not run `process` or `correlate` against the live tenant during the capture.
 The capture tenant stays raw; the analysis happens by replay (section 6). This is
@@ -212,14 +213,19 @@ what makes the week re-runnable.
 Back it up first. The captured week is the asset; the code is replaceable.
 
 ```sh
-docker compose exec postgres pg_dump -U ops -Fc ops_intelligence > ~/capture-$(date +%F).dump
+docker compose exec -T postgres pg_dump -U ops -Fc ops_intelligence > ~/capture-$(date +%F).dump
+docker compose exec -T postgres pg_restore --list < ~/capture-$(date +%F).dump | head -5
 ```
 
-That writes the dump to your home directory, not the `ops-intelligence`
-checkout you `cd`'d into in section 2 — keep it outside the checkout so a
-copy-paste never drops a database dump into the source tree. If you are
-already somewhere else, use that path instead; the point is "not inside the
-checkout", not the specific directory.
+The `-T` is not optional here: without it, compose allocates a terminal, and a
+terminal rewrites line endings inside what is a binary file. The second command
+reads the dump back through PostgreSQL's own restore tool and prints its table of
+contents; if it prints an error instead of a few `;` header lines, the backup is
+not usable, so do not proceed until it does. The file lands in your home
+directory, not the `ops-intelligence` checkout you `cd`'d into in section 2 —
+keep it outside the checkout so a copy-paste never drops a database dump into the
+source tree. If you are already somewhere else, use that path instead; the point
+is "not inside the checkout", not the specific directory.
 
 Copy that file somewhere that is not this host.
 
@@ -248,9 +254,21 @@ docker compose run --rm worker pilot compare run-a run-b
 ```
 
 Expected: both replays print the same counts, and compare reports no deltas.
+
+Each replay also prints a `failed` count. A non-zero figure means some captured
+payloads could not be understood; they are kept, and the review session looks at
+them. The "failed signals" tile on the Overview shows the same number once the UI
+is pointed at the replay tenant, below.
+
 Each replay also prints a `ui slug` line such as `ui slug      replay-4f2c…`.
 To look at a replay in the UI, restart the server pointed at that tenant, then
 point it back afterwards:
+
+This recreates the `server` container, so the values from section 2 must be
+exported in this shell first: `POSTGRES_PASSWORD`, or the new container cannot
+reach the database, and `API_BASE_URL`, or any source created afterwards prints
+an ingestion URL Grafana cannot reach. If you are not sure they are set, run the
+recovery commands under "Already running" in section 2 now.
 
 ```sh
 DEFAULT_ORGANIZATION_SLUG=REPLACE_WITH_THE_UI_SLUG_FROM_THE_REPLAY_OUTPUT docker compose up -d server

@@ -2416,6 +2416,127 @@ git commit -m "Handoff: pilot runbook for the design partner; replay prints its 
 
 ---
 
+### Task 8b: Runbook corrections from the audit, and two small gate fixes
+
+Added after the audit of Tasks 6b to 9. Do this before the whole-branch review, and rerun the fresh-agent pass from Task 8 Step 3 on the corrected document.
+
+**Why.** Three things in the runbook would hurt the handoff. The backup command can corrupt the one file the pitch calls the asset. The daily check asks the teammate to watch a tile that cannot move during capture. And the replay-viewing step can silently recreate the server with default values.
+
+**Files:**
+- Modify: `docs/pilot-runbook.md` (sections 2, 5, 6)
+- Modify: `scripts/check.sh` (image build when Docker is present)
+- Modify: `.github/workflows/ci.yml` (trigger filter)
+
+- [ ] **Step 1: The backup must not go through a pseudo-terminal, and must be verified**
+
+`docker compose exec` allocates a pseudo-terminal by default. A terminal translates line endings, and `pg_dump -Fc` is a binary format, so the dump can be corrupted on the way to the file. This is the same `-T` the runbook already explains for value recovery, applied to the one command where it matters most. In section 6, replace the backup command and its explanation with:
+
+````markdown
+```sh
+docker compose exec -T postgres pg_dump -U ops -Fc ops_intelligence > ~/capture-$(date +%F).dump
+docker compose exec -T postgres pg_restore --list < ~/capture-$(date +%F).dump | head -5
+```
+
+The `-T` is not optional here: without it, compose allocates a terminal, and a
+terminal rewrites line endings inside what is a binary file. The second command
+reads the dump back through PostgreSQL's own restore tool and prints its table of
+contents; if it prints an error instead of a few `;` header lines, the backup is
+not usable, so do not proceed until it does. The file lands in your home
+directory, not the `ops-intelligence` checkout you `cd`'d into in section 2 —
+keep it outside the checkout so a copy-paste never drops a database dump into the
+source tree. If you are already somewhere else, use that path instead; the point
+is "not inside the checkout", not the specific directory.
+````
+
+- [ ] **Step 2: The daily check must watch something that moves**
+
+The capture tenant is never normalized during the pilot, so its failed-signals tile stays at zero by design; failures surface only in a replay tenant. Replace section 5 with:
+
+````markdown
+## 5. During the capture (once a day, two minutes)
+
+- Overview page, first line: the signal count should be higher than yesterday.
+  Events and incidents stay at zero for the whole capture; that is by design, not
+  a fault. Nothing is analysed until the replay in section 6.
+- Sources page: "Last seen" is recent. If it is more than a few hours old on a
+  normal day, check `docker compose ps` and the firewall.
+- `docker compose logs server | grep -i -E "truncated|rejected|exceeds"`: any line
+  here means Grafana sent something the engine could not take whole. Section 9
+  says what each one means; note it for the review session.
+
+Do not run `process` or `correlate` against the live tenant during the capture.
+The capture tenant stays raw; the analysis happens by replay (section 6). This is
+what makes the week re-runnable.
+````
+
+Then, in section 6, after the sentence "Expected: both replays print the same counts, and compare reports no deltas." add:
+
+```markdown
+Each replay also prints a `failed` count. A non-zero figure means some captured
+payloads could not be understood; they are kept, and the review session looks at
+them. The "failed signals" tile on the Overview shows the same number once the UI
+is pointed at the replay tenant, below.
+```
+
+- [ ] **Step 3: Recreating the server must not fall back to defaults**
+
+In section 6, directly before the `DEFAULT_ORGANIZATION_SLUG=... docker compose up -d server` block, add:
+
+```markdown
+This recreates the `server` container, so the values from section 2 must be
+exported in this shell first: `POSTGRES_PASSWORD`, or the new container cannot
+reach the database, and `API_BASE_URL`, or any source created afterwards prints
+an ingestion URL Grafana cannot reach. If you are not sure they are set, run the
+recovery commands under "Already running" in section 2 now.
+```
+
+- [ ] **Step 4: Put the terminal note after the block it explains**
+
+In section 2, "Already running", the paragraph beginning "The `-T` matters:" currently sits between the sentence ending "Then:" and the code block it describes. Move it to directly after that code block.
+
+- [ ] **Step 5: The local gate builds the image when it can**
+
+In `scripts/check.sh`, before the final `echo "all checks passed"`, add:
+
+```sh
+if command -v docker >/dev/null 2>&1; then
+  docker build -q . >/dev/null && echo "docker: image builds"
+else
+  echo "docker not found: skipped the image build"
+fi
+```
+
+Run: `sh scripts/check.sh`
+Expected: ends with `docker: image builds` then `all checks passed`.
+
+- [ ] **Step 6: CI runs once per change**
+
+In `.github/workflows/ci.yml`, replace the `on:` block with:
+
+```yaml
+on:
+  push:
+    branches: [main]
+  pull_request:
+```
+
+The local branch is `main`; a pull request from a feature branch then runs once, not twice.
+
+- [ ] **Step 7: Rerun the fresh-agent pass**
+
+Repeat Task 8 Step 3's subagent pass against the corrected runbook, sections 2, 5 and 6. Fix anything it stumbles on. The human run still happens at the real handoff.
+
+- [ ] **Step 8: Checks and commit**
+
+Run `sh scripts/check.sh`.
+
+```bash
+git add docs/pilot-runbook.md scripts/check.sh .github/workflows/ci.yml docs/plans/2026-09-08-pilot-handoff.md
+git commit -m "Handoff: backup goes through no terminal and is verified; daily check watches the signal count; server recreation keeps its values; local gate builds the image"
+```
+
+---
+
 ### Task 9: Status table, layout, final gate
 
 **Files:**
@@ -2505,6 +2626,11 @@ git commit -m "Handoff: README reflects the Grafana adapter, Docker run path, an
 | 5 | 7c84284, e40d9fa | fallback registered before the layer block as rewritten. Executor found that `ServeDir::not_found_service` stamps a 404 status over the index.html it serves, so every deep link was a 404 with the right body, invisible to the plan's `head -c 60` checks; fixed with `ServeDir::fallback` plus a nested `/assets` service so missing assets still 404, and an `/api/{*rest}` catch-all so stale API paths do not get HTML. Three router tests pin it. |
 | 6 | 78e8c29, 0a57e9d | as planned, plus README fixes: the database password and its initdb-only trap, the open 8080 port stated plainly, and the compose-versus-cargo collision on 8080. |
 | audit | | 2026-09-09: gate reproduced (108 workspace tests, 3 database tests, fmt, clippy, web typecheck). Live probes against the running image: `/`, `/incidents`, `/deep/unknown` 200 HTML; a real asset 200 JavaScript; `/assets/nope.js` 404; API 200 JSON; health and readiness 200; summary carries `failed_signals`. Task 6b added for the three cheap hardening items. |
-| 6b | | pending; do before Task 7. |
+| 6b | dbb5c3f | as planned. Reviewer asked for a healthcheck `start_period`; executor measured 245 ms to ready and ruled it unnecessary. Agreed. |
+| 7 | b89cd45 | as planned. Script proven to fail on an injected formatting error. |
+| 8 | 940a7d9, 635187a, 6b4afcf, af944bf | runbook written, then hardened by two fresh-agent passes given only the document: eight stumbling points fixed (the `<repo-url>` shell trap, the dump landing inside the checkout, a hard-coded source name, the replay-view safety argument), then a value-recovery path for whoever resumes the capture. |
+| 9 | 2e45a70, 4a2c1ed | as planned. Executor rebuilt the image for the final gate rather than probing the already-running container. |
+| audit | | 2026-09-09: gate reproduced (108 workspace tests, 3 database tests, fmt, clippy, web typecheck); server healthy, uid 999, image 164 MB; runbook read in full. Three handoff-relevant defects found in the runbook and two gate gaps, all written into Task 8b: the backup command goes through a pseudo-terminal, which can corrupt a binary dump, and is never verified; the daily check watches the failed-signals tile, which cannot move on an unprocessed capture tenant; recreating the server to view a replay can silently fall back to default values; the local gate never builds the image; CI would run twice per pull request. |
+| 8b | | pending; do before the whole-branch review. |
 
 Executor's deferred-minor ledger, kept for the final review: partial mid-batch database failure commits earlier rows and returns 500 without touching last-seen (Grafana's retry deduplicates); the truncation warning fires before persistence, so it can name a group a later database failure never stored; the Task 2 minors as recorded by the executing session. Closed by Task 3b: the `_ =>` catch-all and the `truncatedAlerts` read on every payload. Closed by Task 3c: silent generic-webhook refusals, the unpinned `truncatedAlerts` preservation, and the README's imprecise description of the bound. Closed by Task 3d: no test in the above-500 regime, and the two "full-cap" test comments. Informational, kept: per-request insert count now scales with the body limit, a few thousand sequential inserts at most, seconds on the pilot host; revisit only if Grafana's webhook timeout is ever hit. From Task 3d, kept: the 413 warning's message says "ingest limit" on every route; the `LARGE_BATCH` test comment describes a body-limit regime the adapter crate cannot exercise; `http-body-util` is pinned in the server crate rather than the workspace table. Carried into Task 5: the fallback must be registered before the layer block (done in 7c84284). Carried into Task 9: the README's "fattest measured" wording, and the "In Docker" subsection's position. From Tasks 4 to 6, kept: no dependency-caching layer in the Dockerfile (build speed only); a bare `/api` with nothing after it reaches the SPA shell (the `/api/{*rest}` catch-all needs a segment). Closed by Task 6b: `--locked` on the release build, the image running as root, and `curl` installed for a healthcheck that did not exist.
