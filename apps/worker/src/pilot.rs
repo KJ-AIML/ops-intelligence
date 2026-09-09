@@ -84,6 +84,7 @@ pub async fn replay(
 
     println!("replaying {} as {}", dataset.name, run.label);
     println!("  tenant       {} (isolated)", run.target_organization_id);
+    println!("  ui slug      replay-{}", run.id);
     println!("  engine       {ENGINE_VERSION}");
 
     match execute(store, &run, provider, with_ai).await {
