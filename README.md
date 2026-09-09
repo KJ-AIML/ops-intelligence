@@ -21,12 +21,12 @@ Architecture is frozen at v0.1 — see `../../resources/operations-intelligence-
 | 5 | Operations UI | **done** |
 | 6 | AI reasoner behind the port | **done; off by default** |
 | P1 | Pilot Lab: capture, datasets, replay, compare | **done** |
-| P2 | Real capture: Grafana adapter, Docker deployment, CI, runbook | in progress |
+| P2 | Real capture: Grafana adapter, Docker deployment, CI, runbook | **built; awaiting first live dataset** |
 | P3 | Golden cases + human-reviewed regression | not started |
 | P4 | Shadow mode against live infrastructure | not started |
 
-No vendor adapter (Grafana / Azure Monitor / Email) is written yet, and none will be until
-the real source inventory selects the top two — see
+The Grafana adapter exists (`adapters/sources/grafana`); Azure Monitor and Email
+will not be written until the real source inventory selects them — see
 [decision 0001](docs/decisions/0001-synthetic-pilot-before-source-inventory.md).
 
 ## Layout
@@ -36,10 +36,17 @@ crates/core/          domain + ports. No axum, no sqlx, no vendor SDK, no fronte
 adapters/
   persistence/        PostgreSQL via SQLx
   sources/csv/        CSV / spreadsheet source adapter
-apps/worker/          worker binary (`import`, `process`, `correlate` subcommands)
+  sources/webhook/    Generic Webhook source adapter (canonical payload)
+  sources/grafana/    Grafana Alerting webhook adapter (native payload)
+  ai/                 reasoning providers behind the ReasoningProvider port
+apps/server/          HTTP server: product API, ingestion, serves web/dist
+apps/worker/          worker binary (`import`, `process`, `correlate`, `reason`, `pilot`)
+web/                  React UI (Vite)
 migrations/           SQLx migrations
 pilot-data/           synthetic dataset + expected-outcome oracle
 docs/decisions/       architecture decision records
+docs/pilot-runbook.md how the design partner runs the capture
+scripts/check.sh      the CI gate, locally
 ```
 
 The dependency rule is one-directional: adapters depend on `core`, `core` depends on
@@ -90,37 +97,6 @@ Start only the `postgres` service for this flow — the compose file's default `
 compose up -d` also starts `server`, which triggers the full release build and then
 binds `:8080` itself, colliding with `cargo run -p ops-server`.
 
-### In Docker
-
-```sh
-POSTGRES_PASSWORD=<pick-one> docker compose up -d --build   # PostgreSQL + server (API and UI) on :8080
-docker compose run --rm worker pilot dataset list
-```
-
-On Windows PowerShell:
-
-```powershell
-$env:POSTGRES_PASSWORD = "<pick-one>"; docker compose up -d --build
-```
-
-Choose `POSTGRES_PASSWORD` before the *first* `up` — Postgres only applies it at
-`initdb`, when `ops-pgdata` is created. Once the volume exists, changing the variable
-only changes what `server`/`worker` try to connect with; the database's own password
-does not change, so `server` (which restarts `unless-stopped`) crash-loops instead of
-failing loudly. To rotate the password later, remove the `ops-pgdata` volume (destroys
-all data) or update it inside Postgres directly. Leaving `POSTGRES_PASSWORD` unset
-falls back to `ops_local_dev`, the same value documented above for local `cargo`
-runs — fine for a closed pilot box, but pick your own for anything reachable by more
-than one person.
-
-Set `API_BASE_URL` to the address Grafana will use (for example
-`http://10.0.0.12:8080`) before starting, because it is what the UI prints as the
-ingestion URL. The database port is bound to loopback only; **port 8080 is not** — the
-API has no authentication, so anyone who can reach it can create ingestion sources or
-acknowledge/resolve incidents. Put 8080 on a trusted network segment (firewall, VPN, or
-an SSH tunnel from Grafana), not on the open internet. The worker is a one-shot tool
-under the `tools` profile, not a daemon.
-
 Migrations run automatically on startup, from an empty database upward.
 
 Expected output on a clean database:
@@ -161,6 +137,37 @@ The worker prints counts for every status and exits unsuccessfully if failures o
 nonterminal work remain (including work another processor currently owns). Event
 timestamps come exclusively from the source RFC3339 `timestamp`; import time is
 only `received_at`. Missing/invalid source timestamps fail explicitly.
+
+### In Docker
+
+```sh
+POSTGRES_PASSWORD=<pick-one> docker compose up -d --build   # PostgreSQL + server (API and UI) on :8080
+docker compose run --rm worker pilot dataset list
+```
+
+On Windows PowerShell:
+
+```powershell
+$env:POSTGRES_PASSWORD = "<pick-one>"; docker compose up -d --build
+```
+
+Choose `POSTGRES_PASSWORD` before the *first* `up` — Postgres only applies it at
+`initdb`, when `ops-pgdata` is created. Once the volume exists, changing the variable
+only changes what `server`/`worker` try to connect with; the database's own password
+does not change, so `server` (which restarts `unless-stopped`) crash-loops instead of
+failing loudly. To rotate the password later, remove the `ops-pgdata` volume (destroys
+all data) or update it inside Postgres directly. Leaving `POSTGRES_PASSWORD` unset
+falls back to `ops_local_dev`, the same value documented above for local `cargo`
+runs — fine for a closed pilot box, but pick your own for anything reachable by more
+than one person.
+
+Set `API_BASE_URL` to the address Grafana will use (for example
+`http://10.0.0.12:8080`) before starting, because it is what the UI prints as the
+ingestion URL. The database port is bound to loopback only; **port 8080 is not** — the
+API has no authentication, so anyone who can reach it can create ingestion sources or
+acknowledge/resolve incidents. Put 8080 on a trusted network segment (firewall, VPN, or
+an SSH tunnel from Grafana), not on the open internet. The worker is a one-shot tool
+under the `tools` profile, not a daemon.
 
 ## API
 
@@ -218,9 +225,10 @@ included. Above it the request is refused whole with a 413, logged as
 `request body exceeds the ingest limit`; Grafana retries a few times and then
 discards the notification, so that log line means a group was lost.
 
-Set **Max alerts** on the Grafana contact point so that can never happen. With
-`Max alerts` at 1,000 and the fattest measured alert shape (about 2.5 KB with its
-share of the digest), a body is at most about 2.5 MB. Beyond 1,000 alerts Grafana
+Set **Max alerts** on the Grafana contact point so that can never happen. The
+fattest measured alert shape costs about 1.9 KB with its share of the digest;
+`Max alerts` at 1,000 uses a deliberately conservative 2.5 KB per alert, so a
+body is at most about 2.5 MB. Beyond 1,000 alerts Grafana
 truncates the group itself before sending; the truncation is warn-logged
 (`grafana dropped alerts from this notification group`) and the `truncatedAlerts`
 count is preserved into every stored alert's group context, pinned by a test, so
