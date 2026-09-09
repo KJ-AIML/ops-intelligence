@@ -92,12 +92,16 @@ impl EventRepository for PgStore {
     }
 
     async fn list(&self, organization_id: OrganizationId) -> Result<Vec<Event>, DomainError> {
-        let rows =
-            sqlx::query("SELECT * FROM events WHERE organization_id = $1 ORDER BY occurred_at, id")
-                .bind(organization_id.as_uuid())
-                .fetch_all(&self.pool)
-                .await
-                .map_err(persistence)?;
+        // Ties on occurred_at are broken on content, never on the event id:
+        // ids are fresh UUIDs on every replay, and the Pilot Lab's promise is
+        // that two replays of one dataset produce identical results.
+        let rows = sqlx::query(
+            "SELECT * FROM events WHERE organization_id = $1 ORDER BY occurred_at, external_id, title, id",
+        )
+        .bind(organization_id.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(persistence)?;
         rows.iter().map(event_from_row).collect()
     }
 }

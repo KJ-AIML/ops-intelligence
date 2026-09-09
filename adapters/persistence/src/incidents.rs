@@ -12,7 +12,10 @@ use sqlx::{postgres::PgRow, Row};
 impl IncidentRepository for PgStore {
     async fn correlate_next(&self, organization_id: OrganizationId) -> Result<bool, DomainError> {
         let mut tx = self.pool.begin().await.map_err(persistence)?;
-        let row = sqlx::query("SELECT * FROM events WHERE organization_id = $1 AND correlation_status = 'received' ORDER BY occurred_at, id FOR UPDATE SKIP LOCKED LIMIT 1")
+        // Ties on occurred_at are broken on content, never on the event id:
+        // ids are fresh UUIDs on every replay, and the Pilot Lab's promise is
+        // that two replays of one dataset produce identical results.
+        let row = sqlx::query("SELECT * FROM events WHERE organization_id = $1 AND correlation_status = 'received' ORDER BY occurred_at, external_id, title, id FOR UPDATE SKIP LOCKED LIMIT 1")
             .bind(organization_id.as_uuid()).fetch_optional(&mut *tx).await.map_err(persistence)?;
         let Some(row) = row else { return Ok(false) };
         let event = event_from_row(&row)?;
