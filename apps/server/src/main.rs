@@ -274,7 +274,8 @@ async fn require_api_token(
     let route = matched_route(&request);
     if route == UNMATCHED_ROUTE
         || route.starts_with("/api/v1/ingest/")
-        || route.starts_with("/health")
+        || route == "/health"
+        || route.starts_with("/health/")
     {
         return next.run(request).await;
     }

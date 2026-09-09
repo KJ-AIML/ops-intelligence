@@ -321,9 +321,13 @@ point it back afterwards:
 
 This recreates the `server` container, so the values from section 2 must be
 exported in this shell first: `POSTGRES_PASSWORD`, or the new container cannot
-reach the database, and `API_BASE_URL`, or any source created afterwards prints
-an ingestion URL Grafana cannot reach. If you are not sure they are set, run the
-recovery commands under "Already running" in section 2 now.
+reach the database; `API_BASE_URL`, or any source created afterwards prints an
+ingestion URL Grafana cannot reach; `API_TOKEN`, or the bearer check disables
+itself and the product API that mints ingestion tokens and resolves incidents
+is wide open again for the rest of the capture; and `BIND_ADDR`, or the port
+falls back to loopback and Grafana can no longer deliver anything at all,
+silently, until someone notices "Last seen" going stale. If you are not sure
+they are set, run the recovery commands under "Already running" in section 2 now.
 
 ```sh
 DEFAULT_ORGANIZATION_SLUG=REPLACE_WITH_THE_UI_SLUG_FROM_THE_REPLAY_OUTPUT docker compose up -d server
