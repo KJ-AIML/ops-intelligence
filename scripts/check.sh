@@ -11,6 +11,7 @@ cargo test --workspace
 
 if [ -n "${TEST_DATABASE_URL:-}" ]; then
   cargo test -p ops-persistence -- --ignored
+  cargo test -p ops-server -- --ignored
 else
   echo "TEST_DATABASE_URL unset: skipped the PostgreSQL acceptance tests"
 fi

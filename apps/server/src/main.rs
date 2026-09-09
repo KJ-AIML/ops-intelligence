@@ -732,6 +732,7 @@ mod api_token_tests {
             .route("/api/v1/probe", route_get(ok))
             .route("/api/v1/ingest/webhook/{token}", route_post(ok))
             .route("/health", route_get(ok))
+            .route("/health/ready", route_get(ok))
             .layer(middleware::from_fn_with_state(
                 token.map(str::to_owned),
                 require_api_token,
@@ -787,7 +788,18 @@ mod api_token_tests {
             StatusCode::OK
         );
         assert_eq!(
-            app.oneshot(get("/health", None)).await.unwrap().status(),
+            app.clone()
+                .oneshot(get("/health", None))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            app.oneshot(get("/health/ready", None))
+                .await
+                .unwrap()
+                .status(),
             StatusCode::OK
         );
     }
@@ -991,5 +1003,101 @@ mod static_serving_tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+}
+
+// ---------------------------------------------------------- ingestion tests
+
+// The only test coverage `webhook::ingest` had before this module was
+// `webhook::tests`, which pins `generate_token()` alone and would still pass
+// if `ingest` itself were deleted. This drives the real router — the same
+// `build_router` main() calls — through the product API's `create_source`
+// and the ingest endpoint it hands back, against a real PostgreSQL database.
+#[cfg(test)]
+mod ingest_tests {
+    use super::*;
+    use axum::body::Body;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    const FIXTURE: &str =
+        include_str!("../../../adapters/sources/grafana/tests/fixtures/grafana-webhook-v1.json");
+
+    async fn app() -> Router {
+        let url = std::env::var("TEST_DATABASE_URL")
+            .expect("set TEST_DATABASE_URL to dedicated _test DB");
+        let pool = ops_persistence::connect(&url).await.unwrap();
+        ops_persistence::run_migrations(&pool).await.unwrap();
+        let store = PgStore::new(pool);
+        let org = ops_core::ports::OrganizationRepository::ensure_by_slug(
+            &store,
+            &format!("ingest-{}", uuid::Uuid::new_v4()),
+            "Ingest acceptance",
+        )
+        .await
+        .unwrap();
+        let state = AppState {
+            store: Arc::new(store),
+            organization_id: org.id,
+            clock: Arc::new(SystemClock),
+            base_url: "http://test".into(),
+        };
+        build_router(state, None, "does-not-exist")
+    }
+
+    async fn json(response: Response) -> serde_json::Value {
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    fn post(path: &str, body: &str) -> Request {
+        axum::http::Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_owned()))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL pointing to a dedicated local database ending in _test"]
+    async fn a_grafana_notification_is_split_stored_and_deduplicated_through_the_real_router() {
+        let app = app().await;
+
+        let created = app
+            .clone()
+            .oneshot(post(
+                "/api/v1/sources",
+                r#"{"name":"grafana-test","source_type":"grafana"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::CREATED);
+        let created = json(created).await;
+        let path = created["ingest_url"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("http://test")
+            .to_owned();
+        assert!(path.starts_with("/api/v1/ingest/webhook/"));
+
+        let first = app.clone().oneshot(post(&path, FIXTURE)).await.unwrap();
+        assert_eq!(first.status(), StatusCode::ACCEPTED);
+        let first = json(first).await;
+        assert_eq!(first["inserted"], 2);
+        assert_eq!(first["duplicates"], 0);
+
+        let again = app.clone().oneshot(post(&path, FIXTURE)).await.unwrap();
+        assert_eq!(again.status(), StatusCode::OK);
+        let again = json(again).await;
+        assert_eq!(again["inserted"], 0);
+        assert_eq!(again["duplicates"], 2);
+        assert_eq!(again["duplicate"], true);
+
+        let wrong = app
+            .oneshot(post("/api/v1/ingest/webhook/not-a-real-token", FIXTURE))
+            .await
+            .unwrap();
+        assert_eq!(wrong.status(), StatusCode::BAD_REQUEST);
     }
 }

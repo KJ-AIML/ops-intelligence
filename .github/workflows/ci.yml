@@ -35,6 +35,7 @@ jobs:
       - run: cargo build --workspace
       - run: cargo test --workspace
       - run: cargo test -p ops-persistence -- --ignored
+      - run: cargo test -p ops-server -- --ignored
 
   web:
     runs-on: ubuntu-latest
