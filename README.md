@@ -80,6 +80,10 @@ AI_ENABLED=false
 API_BASE_URL=http://localhost:8080
 # Where the server finds the built UI; unset means web/dist relative to the working directory.
 WEB_DIST_DIR=web/dist
+
+# Bearer token for the product API (not ingestion, which uses per-source tokens).
+# Unset means no check: local development only. The pilot host must set it.
+API_TOKEN=
 ```
 
 The credentials above are local-development only and must not be reused anywhere else.
@@ -163,11 +167,12 @@ than one person.
 
 Set `API_BASE_URL` to the address Grafana will use (for example
 `http://10.0.0.12:8080`) before starting, because it is what the UI prints as the
-ingestion URL. The database port is bound to loopback only; **port 8080 is not** — the
-API has no authentication, so anyone who can reach it can create ingestion sources or
-acknowledge/resolve incidents. Put 8080 on a trusted network segment (firewall, VPN, or
-an SSH tunnel from Grafana), not on the open internet. The worker is a one-shot tool
-under the `tools` profile, not a daemon.
+ingestion URL. Both ports bind to loopback by default; set `BIND_ADDR=0.0.0.0` to publish 8080,
+and set `API_TOKEN` before you do, because the product API can create ingestion
+sources and acknowledge or resolve incidents. Ingestion authenticates with each
+source's own token. Docker publishes ports underneath `ufw`, so a `ufw` rule does
+not restrict them; `docs/pilot-runbook.md` section 1 has the working alternative.
+The worker is a one-shot tool under the `tools` profile, not a daemon.
 
 ## API
 

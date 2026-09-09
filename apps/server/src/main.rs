@@ -76,6 +76,15 @@ async fn main() -> Result<()> {
         .context("APP_PORT must be a port number")?;
     let base_url =
         std::env::var("API_BASE_URL").unwrap_or_else(|_| format!("http://{host}:{port}"));
+    let api_token = std::env::var("API_TOKEN")
+        .ok()
+        .map(|t| t.trim().to_owned())
+        .filter(|t| !t.is_empty());
+    if api_token.is_none() {
+        tracing::warn!(
+            "API_TOKEN is not set: the product API accepts every request (local development only)"
+        );
+    }
 
     let pool = ops_persistence::connect(&database_url)
         .await
@@ -100,6 +109,18 @@ async fn main() -> Result<()> {
         base_url,
     };
 
+    let web_dir = std::env::var("WEB_DIST_DIR").unwrap_or_else(|_| "web/dist".to_string());
+    let app = build_router(state, api_token, &web_dir);
+
+    let listener = tokio::net::TcpListener::bind((host.as_str(), port))
+        .await
+        .with_context(|| format!("binding {host}:{port}"))?;
+    tracing::info!(%host, port, organization = %organization.slug, "server listening");
+    axum::serve(listener, app).await.context("serving")?;
+    Ok(())
+}
+
+fn build_router(state: AppState, api_token: Option<String>, web_dir: &str) -> Router {
     let router = Router::new()
         .route("/health", get(health))
         .route("/health/ready", get(ready))
@@ -126,8 +147,7 @@ async fn main() -> Result<()> {
     // index.html so React Router owns them. Registered before the layer block
     // so static requests get the same body limit, 413 warning and trace span
     // as everything else.
-    let web_dir = std::env::var("WEB_DIST_DIR").unwrap_or_else(|_| "web/dist".to_string());
-    let index = std::path::Path::new(&web_dir).join("index.html");
+    let index = std::path::Path::new(web_dir).join("index.html");
     let router = if index.is_file() {
         tracing::info!(%web_dir, "serving web UI");
         // `ServeDir::not_found_service` wraps its fallback in `SetStatus`,
@@ -153,15 +173,16 @@ async fn main() -> Result<()> {
         router
             .nest_service(
                 "/assets",
-                ServeDir::new(std::path::Path::new(&web_dir).join("assets")),
+                ServeDir::new(std::path::Path::new(web_dir).join("assets")),
             )
-            .fallback_service(ServeDir::new(&web_dir).fallback(ServeFile::new(index)))
+            .fallback_service(ServeDir::new(web_dir).fallback(ServeFile::new(index)))
     } else {
         tracing::warn!(%web_dir, "web build not found; serving API only (run `npm run build` in web/)");
         router
     };
 
-    let app = router
+    router
+        .layer(middleware::from_fn_with_state(api_token, require_api_token))
         .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
         // axum's `Json` extractor enforces its own 2 MiB default independently
         // of the layer above, so raising MAX_BODY_BYTES past 2 MiB would
@@ -185,14 +206,7 @@ async fn main() -> Result<()> {
                 )
             }),
         )
-        .with_state(state);
-
-    let listener = tokio::net::TcpListener::bind((host.as_str(), port))
-        .await
-        .with_context(|| format!("binding {host}:{port}"))?;
-    tracing::info!(%host, port, organization = %organization.slug, "server listening");
-    axum::serve(listener, app).await.context("serving")?;
-    Ok(())
+        .with_state(state)
 }
 
 /// Placeholder for a request axum's router never matched to a route (its
@@ -241,6 +255,51 @@ async fn warn_on_oversized_body(request: Request, next: Next) -> Response {
         );
     }
     response
+}
+
+/// Bearer check for the product API (tech sheet 20, option A: a local auth
+/// boundary). The ingest route authenticates with its own per-source token and
+/// the health routes must stay open for the compose healthcheck, so both are
+/// matched by route pattern and skipped. Static assets never match a route and
+/// pass too: the SPA shell is public, the data behind it is not. An unset token
+/// disables the check, which is only acceptable on a developer's machine.
+async fn require_api_token(
+    State(expected): State<Option<String>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let Some(expected) = expected else {
+        return next.run(request).await;
+    };
+    let route = matched_route(&request);
+    if route == UNMATCHED_ROUTE
+        || route.starts_with("/api/v1/ingest/")
+        || route.starts_with("/health")
+    {
+        return next.run(request).await;
+    }
+    let presented = request
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::trim)
+        .unwrap_or("");
+    if constant_time_eq(presented.as_bytes(), expected.as_bytes()) {
+        next.run(request).await
+    } else {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": "api token required" })),
+        )
+            .into_response()
+    }
+}
+
+/// Length is not hidden; the token is random and long, so that leaks nothing
+/// useful. Content comparison does not short-circuit.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 // ---------------------------------------------------------------- error type
@@ -654,6 +713,94 @@ mod body_limit_tests {
 
         let response = probe_router().oneshot(post_probe(body)).await.unwrap();
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+}
+
+#[cfg(test)]
+mod api_token_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::routing::{get as route_get, post as route_post};
+    use tower::ServiceExt;
+
+    fn probe_router(token: Option<&str>) -> Router {
+        async fn ok() -> Json<serde_json::Value> {
+            Json(serde_json::json!({ "ok": true }))
+        }
+        Router::new()
+            .route("/api/v1/probe", route_get(ok))
+            .route("/api/v1/ingest/webhook/{token}", route_post(ok))
+            .route("/health", route_get(ok))
+            .layer(middleware::from_fn_with_state(
+                token.map(str::to_owned),
+                require_api_token,
+            ))
+    }
+
+    fn get(path: &str, bearer: Option<&str>) -> Request {
+        let mut builder = axum::http::Request::builder().method("GET").uri(path);
+        if let Some(b) = bearer {
+            builder = builder.header("authorization", format!("Bearer {b}"));
+        }
+        builder.body(Body::empty()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_product_api_needs_the_token_when_one_is_configured() {
+        let app = probe_router(Some("s3cret"));
+        assert_eq!(
+            app.clone()
+                .oneshot(get("/api/v1/probe", None))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(get("/api/v1/probe", Some("wrong")))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            app.oneshot(get("/api/v1/probe", Some("s3cret")))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn ingestion_and_health_stay_outside_the_bearer_check() {
+        let app = probe_router(Some("s3cret"));
+        let ingest = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/ingest/webhook/abc")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(ingest).await.unwrap().status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            app.oneshot(get("/health", None)).await.unwrap().status(),
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn no_configured_token_means_no_check() {
+        let app = probe_router(None);
+        assert_eq!(
+            app.oneshot(get("/api/v1/probe", None))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
     }
 }
 

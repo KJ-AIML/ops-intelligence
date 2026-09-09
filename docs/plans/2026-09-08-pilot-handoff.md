@@ -2594,6 +2594,684 @@ git commit -m "Handoff: README reflects the Grafana adapter, Docker run path, an
 
 ---
 
+### Task 10: Whole-branch review fixes
+
+Added after the whole-branch review of 8307504..d43a9e7. All four parts ship before handoff; rerun the whole-branch review after.
+
+**Rulings.**
+
+- **Critical 1, the firewall recipe Docker defeats.** Both halves of the executor's proposal are taken, and one more. The port binds to loopback by default, so a fresh `up` exposes nothing until the operator sets `BIND_ADDR`. The runbook stops handing out ufw rules; it says plainly that Docker publishes ports underneath ufw. And the product API gets a bearer token, because this is the second time a network boundary has been claimed for it and found wanting, and the API mints ingestion credentials. Tech sheet 20 option A asks for a "local auth boundary"; a token set from the environment and pasted once into the UI is the smallest thing that is one. The ingest route keeps its own per-source token and stays outside the bearer check; health stays open for the compose healthcheck.
+- **Critical 2, unmapped severity tokens.** The engine's refusal to guess a severity is decision 0002 and stays. What changes is when the teammate finds out: a smoke replay on day one, and a request in the runbook to tell the author which values their `severity` label takes. The mapping table is then corrected from real tokens before the final replay, without touching the capture. No provisional Grafana table: that would be guessing twice, the thing decision 0002 forbids.
+- **Important, replay determinism.** Fixed in code with a content-derived tie-break, and pinned by a database test built to fail on the old order most of the time.
+- **The ingestion handler has no test.** It is the entry point of the whole pilot and has been rewritten four times. It gets a database-backed test through the real router.
+
+**Files:**
+- Modify: `docker-compose.yml` (`server` ports and environment)
+- Modify: `apps/server/src/main.rs` (state, a `require_api_token` middleware, `build_router` extraction, tests)
+- Modify: `web/src/api.ts`, `web/src/App.tsx` (token storage, header, paste-once bar)
+- Modify: `adapters/persistence/src/incidents.rs` (draw order), `adapters/persistence/src/events.rs` (listing order)
+- Create: `adapters/persistence/tests/correlation_order.rs`
+- Modify: `docs/pilot-runbook.md` (sections 1, 2, 3, 4, 5)
+- Modify: `README.md` (configuration block, "In Docker" security paragraph)
+- Modify: `scripts/check.sh`, `.github/workflows/ci.yml` (run the server's ignored test)
+
+**Interfaces:**
+- New env: `API_TOKEN` (unset or empty means no bearer check, for local development), `BIND_ADDR` (compose only, default `127.0.0.1`).
+- `POST/GET /api/v1/*` except `/api/v1/ingest/*` require `Authorization: Bearer <API_TOKEN>` when the token is set; failure is `401 {"error":"api token required"}`.
+- `fn build_router(state: AppState, api_token: Option<String>, web_dir: &str) -> Router` in `apps/server/src/main.rs`, used by `main` and by the tests.
+
+#### Part A: fail-closed port and API token
+
+- [ ] **Step A1: Compose**
+
+In `docker-compose.yml`, in the `server` service, replace the `ports` entry with:
+
+```yaml
+    ports:
+      # Loopback by default: a fresh `up` exposes nothing to the network. The
+      # pilot host sets BIND_ADDR=0.0.0.0 on purpose, after reading the runbook.
+      - "${BIND_ADDR:-127.0.0.1}:8080:8080"
+```
+
+and add to the `server` service's `environment`:
+
+```yaml
+      # Bearer token for the product API. Unset means no check (local dev only).
+      API_TOKEN: ${API_TOKEN:-}
+```
+
+- [ ] **Step A2: The middleware, with its tests first**
+
+In `apps/server/src/main.rs`, add next to the existing `body_limit_tests` module:
+
+```rust
+#[cfg(test)]
+mod api_token_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::routing::{get as route_get, post as route_post};
+    use tower::ServiceExt;
+
+    fn probe_router(token: Option<&str>) -> Router {
+        async fn ok() -> Json<serde_json::Value> {
+            Json(serde_json::json!({ "ok": true }))
+        }
+        Router::new()
+            .route("/api/v1/probe", route_get(ok))
+            .route("/api/v1/ingest/webhook/{token}", route_post(ok))
+            .route("/health", route_get(ok))
+            .layer(middleware::from_fn_with_state(
+                token.map(str::to_owned),
+                require_api_token,
+            ))
+    }
+
+    fn get(path: &str, bearer: Option<&str>) -> Request {
+        let mut builder = axum::http::Request::builder().method("GET").uri(path);
+        if let Some(b) = bearer {
+            builder = builder.header("authorization", format!("Bearer {b}"));
+        }
+        builder.body(Body::empty()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_product_api_needs_the_token_when_one_is_configured() {
+        let app = probe_router(Some("s3cret"));
+        assert_eq!(
+            app.clone().oneshot(get("/api/v1/probe", None)).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            app.clone().oneshot(get("/api/v1/probe", Some("wrong"))).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            app.oneshot(get("/api/v1/probe", Some("s3cret"))).await.unwrap().status(),
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn ingestion_and_health_stay_outside_the_bearer_check() {
+        let app = probe_router(Some("s3cret"));
+        let ingest = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/ingest/webhook/abc")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(app.clone().oneshot(ingest).await.unwrap().status(), StatusCode::OK);
+        assert_eq!(app.oneshot(get("/health", None)).await.unwrap().status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn no_configured_token_means_no_check() {
+        let app = probe_router(None);
+        assert_eq!(
+            app.oneshot(get("/api/v1/probe", None)).await.unwrap().status(),
+            StatusCode::OK
+        );
+    }
+}
+```
+
+Run: `cargo test -p ops-server api_token`
+Expected: compile error, `require_api_token` not found.
+
+Then add the middleware next to `warn_on_oversized_body`:
+
+```rust
+/// Bearer check for the product API (tech sheet 20, option A: a local auth
+/// boundary). The ingest route authenticates with its own per-source token and
+/// the health routes must stay open for the compose healthcheck, so both are
+/// matched by route pattern and skipped. Static assets never match a route and
+/// pass too: the SPA shell is public, the data behind it is not. An unset token
+/// disables the check, which is only acceptable on a developer's machine.
+async fn require_api_token(
+    State(expected): State<Option<String>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let Some(expected) = expected else {
+        return next.run(request).await;
+    };
+    let route = matched_route(&request);
+    if route == UNMATCHED_ROUTE || route.starts_with("/api/v1/ingest/") || route.starts_with("/health") {
+        return next.run(request).await;
+    }
+    let presented = request
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::trim)
+        .unwrap_or("");
+    if constant_time_eq(presented.as_bytes(), expected.as_bytes()) {
+        next.run(request).await
+    } else {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": "api token required" })),
+        )
+            .into_response()
+    }
+}
+
+/// Length is not hidden; the token is random and long, so that leaks nothing
+/// useful. Content comparison does not short-circuit.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+```
+
+Run: `cargo test -p ops-server api_token`
+Expected: 3 passed.
+
+- [ ] **Step A3: Wire it, and extract the router so tests can build it**
+
+In `main`, read the token after `base_url`:
+
+```rust
+    let api_token = std::env::var("API_TOKEN")
+        .ok()
+        .map(|t| t.trim().to_owned())
+        .filter(|t| !t.is_empty());
+    if api_token.is_none() {
+        tracing::warn!("API_TOKEN is not set: the product API accepts every request (local development only)");
+    }
+```
+
+Move everything from `let router = Router::new()` through `.with_state(state);` into a new function, so `main` reads `let app = build_router(state, api_token, &web_dir);` with `web_dir` computed in `main` as it is today:
+
+```rust
+fn build_router(state: AppState, api_token: Option<String>, web_dir: &str) -> Router {
+    let router = Router::new()
+        // ... every existing .route(...) line, unchanged, including the /api/{*rest} catch-all ...
+        ;
+    // ... the existing conditional static fallback, unchanged ...
+    router
+        .layer(middleware::from_fn_with_state(api_token, require_api_token))
+        .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
+        // ... the existing DefaultBodyLimit::disable(), warn_on_oversized_body and TraceLayer lines, unchanged ...
+        .with_state(state)
+}
+```
+
+The bearer layer is the first `.layer` call, which makes it the innermost: a request is size-limited and traced before it is authenticated, and authenticated before any handler runs.
+
+Run: `cargo build -p ops-server && cargo test -p ops-server`
+Expected: clean, all server tests pass.
+
+- [ ] **Step A4: The web app sends the token, and asks for it once**
+
+In `web/src/api.ts`, before `async function request`, add:
+
+```ts
+const TOKEN_KEY = "ops_api_token";
+
+export function apiToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+export function setApiToken(token: string): void {
+  localStorage.setItem(TOKEN_KEY, token.trim());
+}
+
+/** Fired once when the server answers 401, so the shell can ask for the token. */
+export const TOKEN_REQUIRED_EVENT = "ops:token-required";
+```
+
+Replace the start of `request` so the header is sent and a 401 raises the event:
+
+```ts
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = apiToken();
+  const response = await fetch(`${BASE}${path}`, {
+    ...init,
+    headers: {
+      "content-type": "application/json",
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(init?.headers ?? {}),
+    },
+  });
+  if (response.status === 401) {
+    window.dispatchEvent(new Event(TOKEN_REQUIRED_EVENT));
+    throw new Error("API token required: paste it in the bar at the top of the page");
+  }
+```
+
+Keep the rest of `request` as it is.
+
+In `web/src/App.tsx`, add the imports and a token bar:
+
+```tsx
+import { useEffect, useState } from "react";
+import { setApiToken, TOKEN_REQUIRED_EVENT } from "./api";
+```
+
+```tsx
+/** Shown only after the server has answered 401. Saving reloads so every query
+ *  refetches with the header; crude, and exactly enough for a pilot. */
+function TokenBar() {
+  const [needed, setNeeded] = useState(false);
+  const [value, setValue] = useState("");
+  useEffect(() => {
+    const show = () => setNeeded(true);
+    window.addEventListener(TOKEN_REQUIRED_EVENT, show);
+    return () => window.removeEventListener(TOKEN_REQUIRED_EVENT, show);
+  }, []);
+  if (!needed) return null;
+  const save = () => {
+    if (!value.trim()) return;
+    setApiToken(value);
+    window.location.reload();
+  };
+  return (
+    <div className="notice error" style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+      <span>This server requires an API token.</span>
+      <input
+        type="password"
+        placeholder="paste API_TOKEN"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") save();
+        }}
+      />
+      <button className="primary" onClick={save} disabled={!value.trim()}>
+        Save
+      </button>
+    </div>
+  );
+}
+```
+
+Render `<TokenBar />` directly under the `</header>` closing tag, before `<Routes>`.
+
+Run: `cd web && npm run typecheck`
+Expected: clean. Then, with `API_TOKEN=s3cret cargo run -p ops-server` and the Vite dev server: the Overview shows the bar, pasting `s3cret` and saving reloads into a working page, and a wrong token shows the bar again.
+
+- [ ] **Step A5: Runbook and README**
+
+In `docs/pilot-runbook.md`, replace the third bullet of section 1 (the one that begins "Restrict port 8080") and its ufw block with:
+
+```markdown
+- Port 8080 is what Grafana and your workstation talk to. Two things protect it,
+  and both are set in section 2: the product API requires a token
+  (`API_TOKEN`), and ingestion requires the per-source token baked into each
+  ingestion URL. Do not rely on `ufw` to restrict the port: Docker publishes
+  ports by rewriting packets before `ufw` sees them, so a `ufw allow from` rule
+  looks like a restriction and is not one. If you also want a network
+  restriction, use Docker's own hook and then verify it from a third machine:
+
+  ```sh
+  sudo iptables -I DOCKER-USER 1 -p tcp --dport 8080 -j DROP
+  sudo iptables -I DOCKER-USER 1 -p tcp --dport 8080 -s REPLACE_WITH_GRAFANA_IP -j RETURN
+  sudo iptables -I DOCKER-USER 1 -p tcp --dport 8080 -s REPLACE_WITH_YOUR_WORKSTATION_IP -j RETURN
+  ```
+
+  From any other machine, `curl -m 3 http://REPLACE_WITH_THIS_HOST_IP:8080/health`
+  must time out. These rules do not survive a reboot on their own; on Debian or
+  Ubuntu, `sudo apt install iptables-persistent` and `sudo netfilter-persistent save`
+  keep them. Skip this block entirely if you are unsure; the token is the guarantee.
+```
+
+In section 2, "First time on this host", add two lines to the export block after `POSTGRES_PASSWORD`:
+
+```sh
+export API_TOKEN=$(openssl rand -hex 24)   # the product API's password; the UI asks for it once — print it with: echo $API_TOKEN
+export BIND_ADDR=0.0.0.0                   # publish port 8080 to the network; without this the stack is reachable only from this host
+```
+
+After the "Expected" paragraph in that section, add: "The first page will ask for the API token; paste the value of `echo $API_TOKEN`. It is kept in that browser only."
+
+In "Already running", extend both recovery blocks so `API_TOKEN` and `BIND_ADDR` are recovered too:
+
+```sh
+docker compose exec server printenv API_TOKEN
+docker compose port server 8080          # prints 0.0.0.0:8080 when published to the network
+```
+
+```sh
+export API_TOKEN=$(docker compose exec -T server printenv API_TOKEN)
+export BIND_ADDR=0.0.0.0
+```
+
+In section 3, the terminal alternative gains the header:
+
+```sh
+curl -s -i -X POST http://$THIS_HOST_IP:8080/api/v1/sources \
+  -H "authorization: Bearer $API_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"name":"REPLACE_WITH_A_SOURCE_NAME","source_type":"grafana"}'
+```
+
+In `README.md`, add to the configuration block:
+
+```sh
+# Bearer token for the product API (not ingestion, which uses per-source tokens).
+# Unset means no check: local development only. The pilot host must set it.
+API_TOKEN=
+```
+
+and in the "In Docker" subsection replace the sentence beginning "The database port is bound to loopback only; **port 8080 is not**" through "not on the open internet." with:
+
+```markdown
+Both ports bind to loopback by default; set `BIND_ADDR=0.0.0.0` to publish 8080,
+and set `API_TOKEN` before you do, because the product API can create ingestion
+sources and acknowledge or resolve incidents. Ingestion authenticates with each
+source's own token. Docker publishes ports underneath `ufw`, so a `ufw` rule does
+not restrict them; `docs/pilot-runbook.md` section 1 has the working alternative.
+```
+
+- [ ] **Step A6: Commit Part A**
+
+Run the four workspace checks and `cd web && npm run typecheck`.
+
+```bash
+git add docker-compose.yml apps/server/src/main.rs web/src/api.ts web/src/App.tsx docs/pilot-runbook.md README.md docs/plans/2026-09-08-pilot-handoff.md
+git commit -m "Handoff: port binds to loopback by default; product API requires a bearer token; runbook stops relying on ufw"
+```
+
+#### Part B: deterministic correlation order
+
+- [ ] **Step B1: The test that fails on the old order**
+
+Create `adapters/persistence/tests/correlation_order.rs`:
+
+```rust
+//! Replay determinism must not depend on luck. The correlator draws events in
+//! `occurred_at` order and breaks ties on the event id, which is a fresh random
+//! UUID on every run; two events that share an exact timestamp under one
+//! fingerprint then correlate in random order, and a firing/recovery pair at
+//! the same instant can come out open or recovered depending on the draw.
+//! `pilot compare` would report deltas with nothing changed.
+
+use chrono::Utc;
+use ops_core::normalization::process_received;
+use ops_core::ports::{
+    IncidentRepository, OrganizationRepository, RawSignalRepository, SourceRepository,
+};
+use ops_core::{IncidentStatus, RawSignal, SourceType};
+use ops_persistence::PgStore;
+use ops_source_csv::{CsvNormalizer, CONTENT_TYPE};
+
+const ATTEMPTS: usize = 6;
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing to a dedicated local database ending in _test"]
+async fn same_instant_events_correlate_the_same_way_every_time() {
+    let url =
+        std::env::var("TEST_DATABASE_URL").expect("set TEST_DATABASE_URL to dedicated _test DB");
+    let store = PgStore::new(ops_persistence::connect(&url).await.unwrap());
+    let database: String = sqlx::query_scalar("SELECT current_database()")
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    assert!(database.ends_with("_test"), "refuse a non-test database");
+    ops_persistence::run_migrations(store.pool()).await.unwrap();
+
+    let mut outcomes = Vec::new();
+    for attempt in 0..ATTEMPTS {
+        let suffix = uuid::Uuid::new_v4();
+        let org = store
+            .ensure_by_slug(&format!("order-{suffix}-{attempt}"), "Order acceptance")
+            .await
+            .unwrap();
+        let source = store
+            .ensure(org.id, SourceType::CsvImport, "csv:order")
+            .await
+            .unwrap();
+
+        // Same instant, same fingerprint. The external ids are chosen so that
+        // the recovery sorts FIRST once the tie-break is content-derived.
+        for (external_id, state, severity) in [
+            ("a-recovery", "ok", "info"),
+            ("b-firing", "alerting", "warning"),
+        ] {
+            let payload = serde_json::json!({
+                "timestamp": "2026-09-02T01:00:00+07:00",
+                "source": "grafana",
+                "external_id": external_id,
+                "title": "api latency",
+                "severity": severity,
+                "state": state,
+                "environment": "production",
+                "service": "payment-api",
+                "resource": "api-prod-01"
+            });
+            let raw = RawSignal::received(
+                org.id,
+                source.id,
+                Some(external_id.into()),
+                CONTENT_TYPE,
+                payload,
+                Utc::now(),
+            );
+            store.insert_if_new(&raw).await.unwrap();
+        }
+
+        process_received(&store, org.id, &CsvNormalizer, &ops_core::SystemClock)
+            .await
+            .unwrap();
+        while store.correlate_next(org.id).await.unwrap() {}
+
+        let incidents = store.list_incidents(org.id).await.unwrap();
+        assert_eq!(incidents.len(), 1, "attempt {attempt}");
+        outcomes.push(incidents[0].status);
+    }
+
+    assert!(
+        outcomes.iter().all(|s| *s == outcomes[0]),
+        "correlation order was not deterministic: {outcomes:?}"
+    );
+    // With the recovery drawn first it is an orphan and is ignored; the firing
+    // then opens the incident. If this assertion fails while the six attempts
+    // agree, the engine's same-instant semantics differ from README "Running
+    // it"; report that rather than change the expected status.
+    assert_eq!(outcomes[0], IncidentStatus::Open);
+}
+```
+
+Run: `cargo test -p ops-persistence --test correlation_order -- --ignored`
+Expected: fails on most runs with `correlation order was not deterministic` (each attempt is a coin flip; six agreeing by chance is one in thirty-two). Run it three times if the first passes.
+
+- [ ] **Step B2: Content-derived tie-break**
+
+In `adapters/persistence/src/incidents.rs`, in the `correlate_next` query, change `ORDER BY occurred_at, id` to `ORDER BY occurred_at, external_id, title, id` and add above the query:
+
+```rust
+        // Ties on occurred_at are broken on content, never on the event id:
+        // ids are fresh UUIDs on every replay, and the Pilot Lab's promise is
+        // that two replays of one dataset produce identical results.
+```
+
+In `adapters/persistence/src/events.rs`, make the same change to the `SELECT * FROM events ... ORDER BY occurred_at, id` listing query, so listings are stable too.
+
+Run: `cargo test -p ops-persistence --test correlation_order -- --ignored` five times.
+Expected: passes every time.
+
+- [ ] **Step B3: Commit Part B**
+
+Run the four workspace checks and all ignored persistence tests.
+
+```bash
+git add adapters/persistence/src/incidents.rs adapters/persistence/src/events.rs adapters/persistence/tests/correlation_order.rs
+git commit -m "Handoff: correlation breaks timestamp ties on content, so replays are deterministic by construction"
+```
+
+#### Part C: day-one smoke replay and the severity question
+
+- [ ] **Step C1: Runbook section 4**
+
+After step 2 of section 4 (the Test notification), add:
+
+```markdown
+Then tell the author which values your alerts' `severity` label takes (for
+example `critical`, `warning`, `page`, `P1`). The engine refuses to guess what a
+severity word means, so an alert whose value is not in its table is stored but
+produces no event until the table is updated. The day-one check in section 5
+shows exactly which values, if any, need adding.
+```
+
+- [ ] **Step C2: Runbook section 5, day one**
+
+At the top of section 5, before the daily bullets, add:
+
+```markdown
+**Day one, once real alerts have arrived** (the Sources page shows a recent
+"Last seen"): run one smoke replay, so a capture the engine cannot read is found
+today instead of on day five. Use the source name from section 3.
+
+```sh
+docker compose run --rm worker pilot dataset create day-01 REPLACE_WITH_THE_SOURCE_NAME_FROM_SECTION_3
+docker compose run --rm worker pilot replay day-01 smoke
+```
+
+Expected: an `events` line ending in `(0 failed)`. If the failed count is not
+zero, list the reasons and send them to the author the same day:
+
+```sh
+docker compose exec -T postgres psql -U ops -d ops_intelligence -c \
+  "SELECT processing_error, COUNT(*) FROM raw_signals WHERE processing_status = 'failed' GROUP BY 1 ORDER BY 2 DESC"
+```
+
+The capture continues regardless; nothing here touches it. The author fixes
+the mapping on their side before the final replay in section 6.
+```
+
+- [ ] **Step C3: Commit Part C**
+
+```bash
+git add docs/pilot-runbook.md
+git commit -m "Handoff: day-one smoke replay and the severity-label question, so an unreadable capture is found on day one"
+```
+
+#### Part D: the ingestion handler gets a test
+
+- [ ] **Step D1: The test**
+
+In `apps/server/src/main.rs`, add a module next to the other test modules. It needs the database, so it is ignored by default like the persistence acceptance tests:
+
+```rust
+#[cfg(test)]
+mod ingest_tests {
+    use super::*;
+    use axum::body::Body;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    const FIXTURE: &str =
+        include_str!("../../../adapters/sources/grafana/tests/fixtures/grafana-webhook-v1.json");
+
+    async fn app() -> Router {
+        let url = std::env::var("TEST_DATABASE_URL")
+            .expect("set TEST_DATABASE_URL to dedicated _test DB");
+        let pool = ops_persistence::connect(&url).await.unwrap();
+        ops_persistence::run_migrations(&pool).await.unwrap();
+        let store = PgStore::new(pool);
+        let org = ops_core::ports::OrganizationRepository::ensure_by_slug(
+            &store,
+            &format!("ingest-{}", uuid::Uuid::new_v4()),
+            "Ingest acceptance",
+        )
+        .await
+        .unwrap();
+        let state = AppState {
+            store: Arc::new(store),
+            organization_id: org.id,
+            clock: Arc::new(SystemClock),
+            base_url: "http://test".into(),
+        };
+        build_router(state, None, "does-not-exist")
+    }
+
+    async fn json(response: Response) -> serde_json::Value {
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    fn post(path: &str, body: &str) -> Request {
+        axum::http::Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_owned()))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL pointing to a dedicated local database ending in _test"]
+    async fn a_grafana_notification_is_split_stored_and_deduplicated_through_the_real_router() {
+        let app = app().await;
+
+        let created = app
+            .clone()
+            .oneshot(post("/api/v1/sources", r#"{"name":"grafana-test","source_type":"grafana"}"#))
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::CREATED);
+        let created = json(created).await;
+        let path = created["ingest_url"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("http://test")
+            .to_owned();
+        assert!(path.starts_with("/api/v1/ingest/webhook/"));
+
+        let first = app.clone().oneshot(post(&path, FIXTURE)).await.unwrap();
+        assert_eq!(first.status(), StatusCode::ACCEPTED);
+        let first = json(first).await;
+        assert_eq!(first["inserted"], 2);
+        assert_eq!(first["duplicates"], 0);
+
+        let again = app.clone().oneshot(post(&path, FIXTURE)).await.unwrap();
+        assert_eq!(again.status(), StatusCode::OK);
+        let again = json(again).await;
+        assert_eq!(again["inserted"], 0);
+        assert_eq!(again["duplicates"], 2);
+        assert_eq!(again["duplicate"], true);
+
+        let wrong = app
+            .oneshot(post("/api/v1/ingest/webhook/not-a-real-token", FIXTURE))
+            .await
+            .unwrap();
+        assert_eq!(wrong.status(), StatusCode::BAD_REQUEST);
+    }
+}
+```
+
+The `include_str!` path is relative to `apps/server/src/`. `uuid` is already a server dependency.
+
+Run: `cargo test -p ops-server -- --ignored`
+Expected: 1 passed.
+
+- [ ] **Step D2: The gate runs it**
+
+In `scripts/check.sh`, inside the `if [ -n "${TEST_DATABASE_URL:-}" ]` branch, after the persistence line add:
+
+```sh
+  cargo test -p ops-server -- --ignored
+```
+
+In `.github/workflows/ci.yml`, after the `cargo test -p ops-persistence -- --ignored` step add:
+
+```yaml
+      - run: cargo test -p ops-server -- --ignored
+```
+
+- [ ] **Step D3: Commit Part D and rerun the review**
+
+Run `sh scripts/check.sh` with `TEST_DATABASE_URL` set.
+
+```bash
+git add apps/server/src/main.rs scripts/check.sh .github/workflows/ci.yml
+git commit -m "Handoff: the ingestion handler is tested through the real router; the gate runs it"
+```
+
+Then rerun the whole-branch review from 8307504 to HEAD and report.
+
+---
+
 ## Self-review against the spec
 
 - **Tech sheet 15, adapter responsibilities:** preserve original payload (Task 2, group + alert), extract status (state_raw), extract labels, extract timestamps (startsAt/endsAt), map severity (via `labels.severity` through core), derive service/resource where possible, map resolved into recovery (state `resolved` → `EventState::Resolved`). Covered.
@@ -2631,6 +3309,8 @@ git commit -m "Handoff: README reflects the Grafana adapter, Docker run path, an
 | 8 | 940a7d9, 635187a, 6b4afcf, af944bf | runbook written, then hardened by two fresh-agent passes given only the document: eight stumbling points fixed (the `<repo-url>` shell trap, the dump landing inside the checkout, a hard-coded source name, the replay-view safety argument), then a value-recovery path for whoever resumes the capture. |
 | 9 | 2e45a70, 4a2c1ed | as planned. Executor rebuilt the image for the final gate rather than probing the already-running container. |
 | audit | | 2026-09-09: gate reproduced (108 workspace tests, 3 database tests, fmt, clippy, web typecheck); server healthy, uid 999, image 164 MB; runbook read in full. Three handoff-relevant defects found in the runbook and two gate gaps, all written into Task 8b: the backup command goes through a pseudo-terminal, which can corrupt a binary dump, and is never verified; the daily check watches the failed-signals tile, which cannot move on an unprocessed capture tenant; recreating the server to view a replay can silently fall back to default values; the local gate never builds the image; CI would run twice per pull request. |
-| 8b | | pending; do before the whole-branch review. |
+| 8b | 4abb2fe, 7388887, d43a9e7 | as planned, with one plan defect found by the implementer: Step 5's `docker build … && echo` did not fail the gate under `set -e`, because POSIX exempts a non-final command in an AND-OR list; proven by breaking the Dockerfile. Split into two statements. Third fresh-agent pass: six genuine findings fixed, including recovery of the source name for a second operator. |
+| review | | whole-branch review of 8307504..d43a9e7, 28 commits. Two Critical: the runbook's ufw recipe does not restrict a Docker-published port, so the unauthenticated write-capable API stays open to the whole network; unmapped `severity` tokens fail every affected alert at normalization, which the runbook's "zero events is expected" hides until day five. One Important: the correlator breaks timestamp ties on a random id, so replay determinism is accidental. Verified by the author against the code on 2026-09-09; gate script exit 0 on d43a9e7. |
+| 10 | | pending. Four parts: fail-closed port and API bearer token; content-derived tie-break with a test built to fail on the old order; day-one smoke replay and severity question in the runbook; a database-backed test through the real ingestion router. Rerun the whole-branch review after. |
 
 Executor's deferred-minor ledger, kept for the final review: partial mid-batch database failure commits earlier rows and returns 500 without touching last-seen (Grafana's retry deduplicates); the truncation warning fires before persistence, so it can name a group a later database failure never stored; the Task 2 minors as recorded by the executing session. Closed by Task 3b: the `_ =>` catch-all and the `truncatedAlerts` read on every payload. Closed by Task 3c: silent generic-webhook refusals, the unpinned `truncatedAlerts` preservation, and the README's imprecise description of the bound. Closed by Task 3d: no test in the above-500 regime, and the two "full-cap" test comments. Informational, kept: per-request insert count now scales with the body limit, a few thousand sequential inserts at most, seconds on the pilot host; revisit only if Grafana's webhook timeout is ever hit. From Task 3d, kept: the 413 warning's message says "ingest limit" on every route; the `LARGE_BATCH` test comment describes a body-limit regime the adapter crate cannot exercise; `http-body-util` is pinned in the server crate rather than the workspace table. Carried into Task 5: the fallback must be registered before the layer block (done in 7c84284). Carried into Task 9: the README's "fattest measured" wording, and the "In Docker" subsection's position. From Tasks 4 to 6, kept: no dependency-caching layer in the Dockerfile (build speed only); a bare `/api` with nothing after it reaches the SPA shell (the `/api/{*rest}` catch-all needs a segment). Closed by Task 6b: `--locked` on the release build, the image running as root, and `curl` installed for a healthcheck that did not exist.

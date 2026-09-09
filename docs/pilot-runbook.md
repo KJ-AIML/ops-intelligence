@@ -33,13 +33,24 @@ you back here instead of doing something silently wrong.
   Grafana can reach on port 8080, and that you can reach from your workstation.
 - Five days where the host stays up. The capture is only as complete as the
   host's uptime, so this should not be a laptop.
-- Restrict port 8080 to Grafana's address and your workstation. The product API
-  has no login of its own for the pilot (tech sheet 20, option A). Example with ufw:
+- Port 8080 is what Grafana and your workstation talk to. Two things protect it,
+  and both are set in section 2: the product API requires a token
+  (`API_TOKEN`), and ingestion requires the per-source token baked into each
+  ingestion URL. Do not rely on `ufw` to restrict the port: Docker publishes
+  ports by rewriting packets before `ufw` sees them, so a `ufw allow from` rule
+  looks like a restriction and is not one. If you also want a network
+  restriction, use Docker's own hook and then verify it from a third machine:
 
   ```sh
-  sudo ufw allow from REPLACE_WITH_GRAFANA_IP to any port 8080 proto tcp
-  sudo ufw allow from REPLACE_WITH_YOUR_WORKSTATION_IP to any port 8080 proto tcp
+  sudo iptables -I DOCKER-USER 1 -p tcp --dport 8080 -j DROP
+  sudo iptables -I DOCKER-USER 1 -p tcp --dport 8080 -s REPLACE_WITH_GRAFANA_IP -j RETURN
+  sudo iptables -I DOCKER-USER 1 -p tcp --dport 8080 -s REPLACE_WITH_YOUR_WORKSTATION_IP -j RETURN
   ```
+
+  From any other machine, `curl -m 3 http://REPLACE_WITH_THIS_HOST_IP:8080/health`
+  must time out. These rules do not survive a reboot on their own; on Debian or
+  Ubuntu, `sudo apt install iptables-persistent` and `sudo netfilter-persistent save`
+  keep them. Skip this block entirely if you are unsure; the token is the guarantee.
 
 ## 2. Start it
 
@@ -65,13 +76,16 @@ git clone REPLACE_WITH_REPO_URL ops-intelligence && cd ops-intelligence   # the 
 export THIS_HOST_IP=REPLACE_WITH_THIS_HOST_IP   # the address Grafana and your workstation use to reach this host — the same one allowed through the firewall in section 1; find it with: hostname -I
 export API_BASE_URL=http://$THIS_HOST_IP:8080   # baked into the ingestion URL the UI (and the curl equivalent in section 3) will show you later — set it now, before either exists
 export POSTGRES_PASSWORD=REPLACE_WITH_A_PASSWORD   # anything; it is only reachable on this host
+export API_TOKEN=$(openssl rand -hex 24)   # the product API's password; the UI asks for it once — print it with: echo $API_TOKEN
+export BIND_ADDR=0.0.0.0                   # publish port 8080 to the network; without this the stack is reachable only from this host
 docker compose up -d --build
 curl -s localhost:8080/health
 ```
 
 Expected: `{"status":"ok"}`. From your workstation, open `http://` followed by
 your real host address and `:8080/` (not the literal text `$THIS_HOST_IP`).
-You should see the Overview page with zeros.
+You should see the Overview page with zeros. The first page will ask for the
+API token; paste the value of `echo $API_TOKEN`. It is kept in that browser only.
 
 Write down the value you used for `THIS_HOST_IP` and the password you picked
 — nothing persists them for you. You need them again in any new shell before
@@ -94,6 +108,8 @@ guessing:
 ```sh
 docker compose exec server printenv API_BASE_URL
 docker compose exec postgres printenv POSTGRES_PASSWORD
+docker compose exec server printenv API_TOKEN
+docker compose port server 8080          # prints 0.0.0.0:8080 when published to the network
 ```
 
 `API_BASE_URL` already contains the host address that was used when the stack
@@ -107,6 +123,8 @@ running on a different host, can never reach that URL. Then:
 export API_BASE_URL=$(docker compose exec -T server printenv API_BASE_URL)
 export THIS_HOST_IP=REPLACE_WITH_THE_ADDRESS_FROM_API_BASE_URL_ABOVE
 export POSTGRES_PASSWORD=$(docker compose exec -T postgres printenv POSTGRES_PASSWORD)
+export API_TOKEN=$(docker compose exec -T server printenv API_TOKEN)
+export BIND_ADDR=0.0.0.0
 ```
 
 The `-T` matters: without it `docker compose exec` allocates a terminal and
@@ -184,6 +202,7 @@ write it down, verbatim; section 6 needs that exact name again, days from now.
 
 ```sh
 curl -s -i -X POST http://$THIS_HOST_IP:8080/api/v1/sources \
+  -H "authorization: Bearer $API_TOKEN" \
   -H 'content-type: application/json' \
   -d '{"name":"REPLACE_WITH_A_SOURCE_NAME","source_type":"grafana"}'
 ```

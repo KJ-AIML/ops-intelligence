@@ -30,8 +30,12 @@ services:
       API_BASE_URL: ${API_BASE_URL:-http://localhost:8080}
       RUST_LOG: ${RUST_LOG:-info,sqlx=warn}
       AI_ENABLED: "false"
+      # Bearer token for the product API. Unset means no check (local dev only).
+      API_TOKEN: ${API_TOKEN:-}
     ports:
-      - "8080:8080"
+      # Loopback by default: a fresh `up` exposes nothing to the network. The
+      # pilot host sets BIND_ADDR=0.0.0.0 on purpose, after reading the runbook.
+      - "${BIND_ADDR:-127.0.0.1}:8080:8080"
     depends_on:
       postgres:
         condition: service_healthy

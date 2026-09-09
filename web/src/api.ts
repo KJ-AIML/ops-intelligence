@@ -136,11 +136,33 @@ export interface CreatedSource extends Source {
 
 const BASE = "/api/v1";
 
+const TOKEN_KEY = "ops_api_token";
+
+export function apiToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+export function setApiToken(token: string): void {
+  localStorage.setItem(TOKEN_KEY, token.trim());
+}
+
+/** Fired once when the server answers 401, so the shell can ask for the token. */
+export const TOKEN_REQUIRED_EVENT = "ops:token-required";
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = apiToken();
   const response = await fetch(`${BASE}${path}`, {
-    headers: { "content-type": "application/json" },
     ...init,
+    headers: {
+      "content-type": "application/json",
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(init?.headers ?? {}),
+    },
   });
+  if (response.status === 401) {
+    window.dispatchEvent(new Event(TOKEN_REQUIRED_EVENT));
+    throw new Error("API token required: paste it in the bar at the top of the page");
+  }
   if (!response.ok) {
     // The server returns { error } for anything it can explain. Surface that
     // rather than a bare status code.
