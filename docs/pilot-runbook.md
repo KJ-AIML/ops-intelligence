@@ -125,11 +125,18 @@ export THIS_HOST_IP=REPLACE_WITH_THE_ADDRESS_FROM_API_BASE_URL_ABOVE
 export POSTGRES_PASSWORD=$(docker compose exec -T postgres printenv POSTGRES_PASSWORD)
 export API_TOKEN=$(docker compose exec -T server printenv API_TOKEN)
 export BIND_ADDR=0.0.0.0
+[ -n "$API_TOKEN" ] || { export API_TOKEN=$(openssl rand -hex 24); echo "This stack was started WITHOUT an API token. One was just generated; run: docker compose up -d server   and then paste it into the UI: echo \$API_TOKEN"; }
 ```
 
 The `-T` matters: without it `docker compose exec` allocates a terminal and
 appends a carriage return, which `$(...)` does not strip, so the value would
 end up with an invisible carriage return on the end.
+
+The last line covers a stack that was started without a token: `printenv`
+then prints nothing and exits successfully, so without the check the empty
+value would be carried into the next `up` and the product API would come back
+up unprotected, silently. The check generates a token instead and tells you to
+recreate the server so it takes effect.
 
 If the value you just read back contains `localhost` or `127.0.0.1`, stop:
 that is the compose default when nobody exported `API_BASE_URL` before the
@@ -161,7 +168,7 @@ Section 3 asked you to write down the source name — if that got lost too,
 recover it from the API instead of guessing from the Sources page:
 
 ```sh
-curl -s http://localhost:8080/api/v1/sources
+curl -s -H "authorization: Bearer $API_TOKEN" http://localhost:8080/api/v1/sources
 ```
 
 Every source returned has `name`, `source_type` and `last_seen_at`. The

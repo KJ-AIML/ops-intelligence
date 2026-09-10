@@ -3272,6 +3272,101 @@ Then rerun the whole-branch review from 8307504 to HEAD and report.
 
 ---
 
+### Task 11: Index for the deterministic draw; two runbook lines
+
+Added after the re-review of 8307504..da1d9e2. Three small items; the first is a real regression introduced by Task 10 Part B.
+
+**Why.** Part B changed the correlator's draw to `ORDER BY occurred_at, external_id, title, id`. The pending-work index from migration 0003 is `(organization_id, occurred_at, id) WHERE correlation_status = 'received'`, which no longer matches the sort key, so the planner scans the non-partial `occurred_at` index and filters out every already-correlated event on every draw. The executor measured it on a 50,000-event table mid-drain: about 7 ms per draw against 0.05 ms with a matching index, and the cost grows as the drain proceeds. Replay speed is a promise the runbook leans on. The other two are runbook lines that would fail in exactly the situation they exist for.
+
+**Files:**
+- Create: `migrations/0007_correlation_order_index.sql`
+- Modify: `docs/pilot-runbook.md` (section 2, the token recovery block and the source-name recovery command)
+
+- [ ] **Step 1: Replace the pending-work index**
+
+`migrations/0007_correlation_order_index.sql`:
+
+```sql
+-- Task 10 Part B changed the correlator's draw order to
+-- (occurred_at, external_id, title, id) so that two replays of one dataset
+-- correlate identically. The pending-work index from migration 0003 covers
+-- only (organization_id, occurred_at, id); with the new sort key the planner
+-- fell back to the non-partial occurred_at index and filtered out every
+-- already-correlated event on every draw, so a drain got slower as it went.
+-- This index matches the new sort key exactly. It replaces the old one, whose
+-- leading columns it shares, so nothing that used the old index loses it.
+CREATE INDEX events_correlation_order_idx
+    ON events (organization_id, occurred_at, external_id, title, id)
+    WHERE correlation_status = 'received';
+
+DROP INDEX events_correlation_pending_idx;
+```
+
+Run: `cargo test -p ops-persistence -- --ignored`
+Expected: 4 passed. Migrations run from an empty database inside those tests, so this proves the migration applies.
+
+Then, with the compose stack rebuilt so the server has applied the migration (`docker compose up -d --build`), confirm the index serves the draw without a sort. The dev database is small enough that the planner may prefer a sequential scan on its own, so disable that for the check only:
+
+```sh
+docker compose exec -T postgres psql -U ops -d ops_intelligence -c "SET enable_seqscan = off; EXPLAIN (COSTS OFF) SELECT * FROM events WHERE organization_id = '00000000-0000-0000-0000-000000000000' AND correlation_status = 'received' ORDER BY occurred_at, external_id, title, id FOR UPDATE SKIP LOCKED LIMIT 1"
+```
+
+Expected: the plan names `events_correlation_order_idx` and contains no `Sort` node. The scale measurement is the executor's from the re-review; this check proves the index is usable, which is what a migration can prove.
+
+- [ ] **Step 2: The source-name recovery must send the token**
+
+In `docs/pilot-runbook.md`, section 2, replace:
+
+```sh
+curl -s http://localhost:8080/api/v1/sources
+```
+
+with:
+
+```sh
+curl -s -H "authorization: Bearer $API_TOKEN" http://localhost:8080/api/v1/sources
+```
+
+- [ ] **Step 3: A missing token must not be carried forward silently**
+
+In the same section, replace the two lines:
+
+```sh
+export API_TOKEN=$(docker compose exec -T server printenv API_TOKEN)
+export BIND_ADDR=0.0.0.0
+```
+
+with:
+
+```sh
+export API_TOKEN=$(docker compose exec -T server printenv API_TOKEN)
+export BIND_ADDR=0.0.0.0
+[ -n "$API_TOKEN" ] || { export API_TOKEN=$(openssl rand -hex 24); echo "This stack was started WITHOUT an API token. One was just generated; run: docker compose up -d server   and then paste it into the UI: echo \$API_TOKEN"; }
+```
+
+and add, after the paragraph beginning "The `-T` matters":
+
+```markdown
+The last line covers a stack that was started without a token: `printenv`
+then prints nothing and exits successfully, so without the check the empty
+value would be carried into the next `up` and the product API would come back
+up unprotected, silently. The check generates a token instead and tells you to
+recreate the server so it takes effect.
+```
+
+- [ ] **Step 4: Commit and re-review**
+
+Run `sh scripts/check.sh` with `TEST_DATABASE_URL` set.
+
+```bash
+git add migrations/0007_correlation_order_index.sql docs/pilot-runbook.md docs/plans/2026-09-08-pilot-handoff.md
+git commit -m "Handoff: pending-work index matches the deterministic draw order; runbook recovery sends the token and never carries an empty one forward"
+```
+
+Then rerun the whole-branch review from 8307504 to HEAD. Expected: the index finding and both Important documentation findings closed, nothing new above Minor.
+
+---
+
 ## Self-review against the spec
 
 - **Tech sheet 15, adapter responsibilities:** preserve original payload (Task 2, group + alert), extract status (state_raw), extract labels, extract timestamps (startsAt/endsAt), map severity (via `labels.severity` through core), derive service/resource where possible, map resolved into recovery (state `resolved` → `EventState::Resolved`). Covered.
@@ -3311,6 +3406,7 @@ Then rerun the whole-branch review from 8307504 to HEAD and report.
 | audit | | 2026-09-09: gate reproduced (108 workspace tests, 3 database tests, fmt, clippy, web typecheck); server healthy, uid 999, image 164 MB; runbook read in full. Three handoff-relevant defects found in the runbook and two gate gaps, all written into Task 8b: the backup command goes through a pseudo-terminal, which can corrupt a binary dump, and is never verified; the daily check watches the failed-signals tile, which cannot move on an unprocessed capture tenant; recreating the server to view a replay can silently fall back to default values; the local gate never builds the image; CI would run twice per pull request. |
 | 8b | 4abb2fe, 7388887, d43a9e7 | as planned, with one plan defect found by the implementer: Step 5's `docker build … && echo` did not fail the gate under `set -e`, because POSIX exempts a non-final command in an AND-OR list; proven by breaking the Dockerfile. Split into two statements. Third fresh-agent pass: six genuine findings fixed, including recovery of the source name for a second operator. |
 | review | | whole-branch review of 8307504..d43a9e7, 28 commits. Two Critical: the runbook's ufw recipe does not restrict a Docker-published port, so the unauthenticated write-capable API stays open to the whole network; unmapped `severity` tokens fail every affected alert at normalization, which the runbook's "zero events is expected" hides until day five. One Important: the correlator breaks timestamp ties on a random id, so replay determinism is accidental. Verified by the author against the code on 2026-09-09; gate script exit 0 on d43a9e7. |
-| 10 | | pending. Four parts: fail-closed port and API bearer token; content-derived tie-break with a test built to fail on the old order; day-one smoke replay and severity question in the runbook; a database-backed test through the real ingestion router. Rerun the whole-branch review after. |
+| 10 | 11471d1, 438d36f, 5f1ee59, f757dd2, da1d9e2 | all four parts as planned. Part B's test failed three of three runs before the fix with three different random patterns and passed five of five after. Part D's test proven by flipping a status code. Executor rebuilt the image and verified both configurations live: loopback default, and published with the token, including that the healthcheck and ingestion stay outside the bearer check. Re-review closed both Criticals, determinism and the ingest test; found two Important runbook lines and, by redoing the reviewer's own performance probe on a realistic table, an index regression from Part B. Audit 2026-09-10: gate script exit 0 with database tests, index definitions and runbook lines confirmed against the tree. |
+| 11 | | pending. Replacement pending-work index matching the new draw order; the source-name recovery sends the token; an empty recovered token is never carried forward. Re-review after. |
 
 Executor's deferred-minor ledger, kept for the final review: partial mid-batch database failure commits earlier rows and returns 500 without touching last-seen (Grafana's retry deduplicates); the truncation warning fires before persistence, so it can name a group a later database failure never stored; the Task 2 minors as recorded by the executing session. Closed by Task 3b: the `_ =>` catch-all and the `truncatedAlerts` read on every payload. Closed by Task 3c: silent generic-webhook refusals, the unpinned `truncatedAlerts` preservation, and the README's imprecise description of the bound. Closed by Task 3d: no test in the above-500 regime, and the two "full-cap" test comments. Informational, kept: per-request insert count now scales with the body limit, a few thousand sequential inserts at most, seconds on the pilot host; revisit only if Grafana's webhook timeout is ever hit. From Task 3d, kept: the 413 warning's message says "ingest limit" on every route; the `LARGE_BATCH` test comment describes a body-limit regime the adapter crate cannot exercise; `http-body-util` is pinned in the server crate rather than the workspace table. Carried into Task 5: the fallback must be registered before the layer block (done in 7c84284). Carried into Task 9: the README's "fattest measured" wording, and the "In Docker" subsection's position. From Tasks 4 to 6, kept: no dependency-caching layer in the Dockerfile (build speed only); a bare `/api` with nothing after it reaches the SPA shell (the `/api/{*rest}` catch-all needs a segment). Closed by Task 6b: `--locked` on the release build, the image running as root, and `curl` installed for a healthcheck that did not exist.
