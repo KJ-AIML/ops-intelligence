@@ -377,6 +377,13 @@ DEFAULT_ORGANIZATION_SLUG=REPLACE_WITH_THE_UI_SLUG_FROM_THE_REPLAY_OUTPUT docker
 docker compose up -d server                     # back to the capture tenant
 ```
 
+Nothing on the page tells you which tenant you are looking at. The small
+`pilot` badge beside the product name is a fixed label, not a tenant
+indicator — it reads exactly the same on the replay tenant as on the capture
+tenant, before and after the swap. The way back is the second
+`docker compose up -d server` line above; run it before you forget which
+tenant you left the page on.
+
 This is safe, and here is exactly why, so you do not have to take it on faith:
 
 - Incoming alerts are routed by the per-source token baked into the ingestion
@@ -393,11 +400,15 @@ This is safe, and here is exactly why, so you do not have to take it on faith:
   this after the capture has already ended, so there is nothing left to
   interrupt.
 - While pointed at the replay tenant, the Sources page shows a copy of the
-  capture source under the same name, marked `offline import` because the copy
-  has no ingestion token. It is a replay artefact. Disabling it does nothing to
-  real ingestion, and the real source cannot be seen or paused from here.
-  Section 7's pause step assumes the server is pointed at the capture tenant:
-  run `docker compose up -d server` first if you are still viewing a replay.
+  capture source under the same name. It carries the `offline import` label,
+  but that label is not what marks it as a copy — the UI gives it to any
+  source with no ingestion token, and other tokenless sources can wear it too.
+  What actually marks it is simpler: the replay tenant holds nothing but
+  replay artefacts, so everything the Sources page shows here, this copy
+  included, is one. Disabling it does nothing to real ingestion, and the real
+  source cannot be seen or paused from here. Section 7's pause step assumes
+  the server is pointed at the capture tenant: run `docker compose up -d
+  server` first if you are still viewing a replay.
 
 ## 7. Stop or roll back
 
@@ -407,8 +418,12 @@ This is safe, and here is exactly why, so you do not have to take it on faith:
   it entirely: `docker compose down -v`, after the backup in section 6.
 - To pause without removing: with the server pointed at the capture tenant
   (run `docker compose up -d server` first if you were viewing a replay),
-  disable the source on the Sources page, the one marked `webhook token set`.
-  Grafana will get a 400 and give up after its retries.
+  find the source with the exact name you wrote down in section 3 on the
+  Sources page and disable it. Its ingestion column reads `webhook token
+  set`, which tells it apart from a tokenless replay copy, but that label is
+  not unique on its own — every source with a token shows it — so match on
+  the name, not the label. Grafana will get a 400 and give up after its
+  retries.
 
 ## 8. The review session (one hour, author present)
 
