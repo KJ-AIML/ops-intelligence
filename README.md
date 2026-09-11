@@ -189,9 +189,13 @@ cargo run -p ops-server            # listens on APP_PORT, default 8080
 | POST | `/api/v1/incidents/{id}/acknowledge` | open → acknowledged |
 | POST | `/api/v1/incidents/{id}/resolve` | → resolved (terminal) |
 | GET | `/api/v1/events` | event explorer, for debugging and trust |
-| GET/POST | `/api/v1/sources` | list, or create a Generic Webhook source |
+| GET/POST | `/api/v1/sources` | list, or create a webhook-fed source: `source_type` `generic_webhook` (default) or `grafana` |
 | PATCH | `/api/v1/sources/{id}` | enable/disable |
-| POST | `/api/v1/ingest/webhook/{token}` | Generic Webhook ingestion |
+| POST | `/api/v1/ingest/webhook/{token}` | ingestion, for both source types; the token in the path is the credential |
+
+When `API_TOKEN` is set, every `/api/v1` route above needs
+`Authorization: Bearer $API_TOKEN` except ingestion, which authenticates with the
+per-source token in its own URL. `/health` and `/health/ready` stay open.
 
 ### Generic Webhook
 
