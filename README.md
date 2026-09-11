@@ -243,7 +243,8 @@ from your own alert sizes: `Max alerts` times bytes per alert must stay under
 
 A batch whose group context multiplied across its alerts would separately exceed
 32 MiB is refused with a 400 and logged as `grafana batch rejected`; at realistic
-Grafana payload shapes this is unreachable and exists only as a safety net.
+Grafana payload shapes this is not expected to trigger and exists only as a
+safety net.
 
 ```sh
 curl -X POST localhost:8080/api/v1/sources -H 'content-type: application/json' \

@@ -79,8 +79,12 @@ export POSTGRES_PASSWORD=REPLACE_WITH_A_PASSWORD   # anything; it is only reacha
 export API_TOKEN=$(openssl rand -hex 24)   # the product API's password; the UI asks for it once — print it with: echo $API_TOKEN
 export BIND_ADDR=0.0.0.0                   # publish port 8080 to the network; without this the stack is reachable only from this host
 docker compose up -d --build
-curl -s localhost:8080/health
+until curl -sf localhost:8080/health; do sleep 2; done
 ```
+
+The loop waits for the server to finish starting, prints the health line once,
+and stops. If it runs for more than a minute, look at `docker compose logs
+server`.
 
 Expected: `{"status":"ok"}`. From your workstation, open `http://` followed by
 your real host address and `:8080/` (not the literal text `$THIS_HOST_IP`).
@@ -100,10 +104,10 @@ them from the running containers instead of guessing.
 
 The stack came up before — a reboot, a shift change, or you are back for
 section 5 or 6, and are not necessarily the person who ran "First time on
-this host". If you still have the original `THIS_HOST_IP`, `API_BASE_URL` and
-`POSTGRES_PASSWORD` values, re-export them in this shell and skip to the list
-below. If you do not, recover them from the running containers rather than
-guessing:
+this host". Recover the values from the running containers even if you think
+you still have them. The commands are cheap, they cannot be wrong, and the
+last line of the export block catches a stack that was started without an
+API token, which a remembered value would skip straight past:
 
 ```sh
 docker compose exec server printenv API_BASE_URL
@@ -229,7 +233,9 @@ In Grafana (Alerting → Contact points):
    recoveries are half the data. Set **Max alerts** to `1000`. This is not
    optional: it is what guarantees a fleet-wide storm is truncated with a count
    instead of refused whole. If your alerts are unusually large, the rule is
-   `Max alerts` times bytes per alert under 4 MiB with margin.
+   `Max alerts` times (bytes per alert plus about 600 bytes for Grafana's
+   rendered digest of that alert) under 4 MiB with margin; a 4 KB alert
+   therefore counts as about 4.6 KB.
 2. Click **Test** and send the test notification. Back on the Sources page, the
    source's "Last seen" should update within a few seconds. If it does not, the
    host is not reachable from Grafana; check the firewall before anything else.
@@ -256,9 +262,12 @@ shows exactly which values, if any, need adding.
 today instead of on day five. Use the source name from section 3.
 
 ```sh
-docker compose run --rm worker pilot dataset create day-01 REPLACE_WITH_THE_SOURCE_NAME_FROM_SECTION_3
-docker compose run --rm worker pilot replay day-01 smoke
+docker compose run --rm worker pilot dataset create day-$(date +%F) REPLACE_WITH_THE_SOURCE_NAME_FROM_SECTION_3
+docker compose run --rm worker pilot replay day-$(date +%F) smoke
 ```
+
+The dataset name carries the date, so the check can be repeated on any day
+without a name clash.
 
 Expected: an `events` line ending in `(0 failed)`. If the failed count is not
 zero, list the reasons and send them to the author the same day:
@@ -383,10 +392,12 @@ This is safe, and here is exactly why, so you do not have to take it on faith:
   relies on when you pause a source), so nothing is lost. You are also doing
   this after the capture has already ended, so there is nothing left to
   interrupt.
-- While pointed at the replay tenant, the Sources page will look empty — that
-  tenant has no sources of its own, only the replayed signals, incidents and
-  insights. That is expected, not something you broke; go to the Overview and
-  Incidents pages instead.
+- While pointed at the replay tenant, the Sources page shows a copy of the
+  capture source under the same name, marked `offline import` because the copy
+  has no ingestion token. It is a replay artefact. Disabling it does nothing to
+  real ingestion, and the real source cannot be seen or paused from here.
+  Section 7's pause step assumes the server is pointed at the capture tenant:
+  run `docker compose up -d server` first if you are still viewing a replay.
 
 ## 7. Stop or roll back
 
@@ -394,8 +405,10 @@ This is safe, and here is exactly why, so you do not have to take it on faith:
   engine stop instantly; nothing else changes.
 - Host: `docker compose down`. Data stays in the `ops-pgdata` volume. To remove
   it entirely: `docker compose down -v`, after the backup in section 6.
-- To pause without removing: disable the source on the Sources page. Grafana
-  will get a 400 and give up after its retries.
+- To pause without removing: with the server pointed at the capture tenant
+  (run `docker compose up -d server` first if you were viewing a replay),
+  disable the source on the Sources page, the one marked `webhook token set`.
+  Grafana will get a 400 and give up after its retries.
 
 ## 8. The review session (one hour, author present)
 
@@ -424,9 +437,9 @@ golden cases for phase P3.
   the expected behaviour in a large storm, not a fault; note the count for the
   review session.
 - A batch whose group context multiplied across its alerts would pass 32 MiB is
-  refused and logged as `grafana batch rejected`. At real Grafana shapes this is
-  unreachable. If the line appears, tell the author: the notification was shaped
-  unlike anything the engine expects.
+  refused and logged as `grafana batch rejected`. At real Grafana shapes this
+  is not expected. If the line appears, tell the author: the notification was
+  shaped unlike anything the engine expects.
 - A generic-webhook body the engine cannot read is refused and logged as
   `webhook payload rejected`. Same instruction.
 - Which alert labels mean environment, service and resource are fixed guesses

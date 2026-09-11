@@ -3303,7 +3303,7 @@ DROP INDEX events_correlation_pending_idx;
 ```
 
 Run: `cargo test -p ops-persistence -- --ignored`
-Expected: 4 passed. Migrations run from an empty database inside those tests, so this proves the migration applies.
+Expected: 4 passed. Migrations run from an empty database inside those tests, so this proves the migration applies, but only if the crate was actually rebuilt: `sqlx::migrate!` embeds the directory at compile time and, until Task 12 adds a build script, adding a file does not trigger a rebuild. The executor caught this: the first run finished in under a second with no compilation and left the test database at migration 6. Force a rebuild (`touch adapters/persistence/src/lib.rs`) before trusting the result.
 
 Then, with the compose stack rebuilt so the server has applied the migration (`docker compose up -d --build`), confirm the index serves the draw without a sort. The dev database is small enough that the planner may prefer a sequential scan on its own, so disable that for the check only:
 
@@ -3367,6 +3367,101 @@ Then rerun the whole-branch review from 8307504 to HEAD. Expected: the index fin
 
 ---
 
+### Task 12: Runbook truth fixes, and migrations that rebuild
+
+Added after the re-review of 8307504..f94b4cf. Documentation except for a three-line build script. This is the last task before handoff.
+
+**Files:**
+- Create: `adapters/persistence/build.rs`
+- Modify: `docs/pilot-runbook.md` (sections 2, 4, 5, 6, 7, 9)
+
+- [ ] **Step 1: Adding a migration rebuilds the crate**
+
+`adapters/persistence/build.rs`:
+
+```rust
+//! `sqlx::migrate!("../../migrations")` embeds the directory at compile time.
+//! Without this, adding a migration file does not rebuild the crate, and the
+//! acceptance tests run against the previous set while reporting success.
+//! Task 11 was verified against migration 6 once for exactly that reason.
+fn main() {
+    println!("cargo:rerun-if-changed=../../migrations");
+}
+```
+
+Run: `cargo build -p ops-persistence && touch migrations/0007_correlation_order_index.sql && cargo build -p ops-persistence 2>&1 | grep -c "Compiling ops-persistence"`
+Expected: `1`. Touching a migration now recompiles the crate.
+
+- [ ] **Step 2: No shortcut past the recovery block**
+
+In section 2, "Already running", replace the two sentences beginning "If you still have the original" and ending "rather than guessing:" with:
+
+```markdown
+Recover the values from the running containers even if you think you still
+have them. The commands are cheap, they cannot be wrong, and the last line of
+the export block catches a stack that was started without an API token, which
+a remembered value would skip straight past:
+```
+
+- [ ] **Step 3: The replay tenant's Sources page, and where pausing really happens**
+
+In section 6, replace the bullet beginning "While pointed at the replay tenant, the Sources page will look empty" with:
+
+```markdown
+- While pointed at the replay tenant, the Sources page shows a copy of the
+  capture source under the same name, marked `offline import` because the copy
+  has no ingestion token. It is a replay artefact. Disabling it does nothing to
+  real ingestion, and the real source cannot be seen or paused from here.
+  Section 7's pause step assumes the server is pointed at the capture tenant:
+  run `docker compose up -d server` first if you are still viewing a replay.
+```
+
+In section 7, replace the bullet beginning "To pause without removing" with:
+
+```markdown
+- To pause without removing: with the server pointed at the capture tenant
+  (run `docker compose up -d server` first if you were viewing a replay),
+  disable the source on the Sources page, the one marked `webhook token set`.
+  Grafana will get a 400 and give up after its retries.
+```
+
+- [ ] **Step 4: Three small truths**
+
+In section 4, replace the sentence "If your alerts are unusually large, the rule is `Max alerts` times bytes per alert under 4 MiB with margin." with:
+
+```markdown
+If your alerts are unusually large, the rule is `Max alerts` times (bytes per
+alert plus about 600 bytes for Grafana's rendered digest of that alert) under
+4 MiB with margin; a 4 KB alert therefore counts as about 4.6 KB.
+```
+
+In section 5, in both day-one commands, replace `day-01` with `day-$(date +%F)`, and add after the code block: "The dataset name carries the date, so the check can be repeated on any day without a name clash."
+
+In section 2, "First time on this host", replace the line `curl -s localhost:8080/health` with:
+
+```sh
+until curl -sf localhost:8080/health; do sleep 2; done
+```
+
+and add before the "Expected" sentence: "The loop waits for the server to finish starting, prints the health line once, and stops. If it runs for more than a minute, look at `docker compose logs server`."
+
+In section 9, replace "At real Grafana shapes this is unreachable." with "At real Grafana shapes this is not expected."
+
+- [ ] **Step 5: Fresh-agent pass, commit, final review**
+
+Repeat Task 8 Step 3's subagent pass against sections 2, 6 and 7 of the corrected runbook. Fix anything it stumbles on.
+
+Run `sh scripts/check.sh` with `TEST_DATABASE_URL` set.
+
+```bash
+git add adapters/persistence/build.rs docs/pilot-runbook.md docs/plans/2026-09-08-pilot-handoff.md
+git commit -m "Handoff: migrations rebuild the persistence crate; runbook stops offering a shortcut past token recovery and tells the truth about replay tenants"
+```
+
+Then rerun the whole-branch review from 8307504 to HEAD. Expected: nothing above Minor. That is the handoff gate.
+
+---
+
 ## Self-review against the spec
 
 - **Tech sheet 15, adapter responsibilities:** preserve original payload (Task 2, group + alert), extract status (state_raw), extract labels, extract timestamps (startsAt/endsAt), map severity (via `labels.severity` through core), derive service/resource where possible, map resolved into recovery (state `resolved` → `EventState::Resolved`). Covered.
@@ -3407,6 +3502,7 @@ Then rerun the whole-branch review from 8307504 to HEAD. Expected: the index fin
 | 8b | 4abb2fe, 7388887, d43a9e7 | as planned, with one plan defect found by the implementer: Step 5's `docker build … && echo` did not fail the gate under `set -e`, because POSIX exempts a non-final command in an AND-OR list; proven by breaking the Dockerfile. Split into two statements. Third fresh-agent pass: six genuine findings fixed, including recovery of the source name for a second operator. |
 | review | | whole-branch review of 8307504..d43a9e7, 28 commits. Two Critical: the runbook's ufw recipe does not restrict a Docker-published port, so the unauthenticated write-capable API stays open to the whole network; unmapped `severity` tokens fail every affected alert at normalization, which the runbook's "zero events is expected" hides until day five. One Important: the correlator breaks timestamp ties on a random id, so replay determinism is accidental. Verified by the author against the code on 2026-09-09; gate script exit 0 on d43a9e7. |
 | 10 | 11471d1, 438d36f, 5f1ee59, f757dd2, da1d9e2 | all four parts as planned. Part B's test failed three of three runs before the fix with three different random patterns and passed five of five after. Part D's test proven by flipping a status code. Executor rebuilt the image and verified both configurations live: loopback default, and published with the token, including that the healthcheck and ingestion stay outside the bearer check. Re-review closed both Criticals, determinism and the ingest test; found two Important runbook lines and, by redoing the reviewer's own performance probe on a realistic table, an index regression from Part B. Audit 2026-09-10: gate script exit 0 with database tests, index definitions and runbook lines confirmed against the tree. |
-| 11 | | pending. Replacement pending-work index matching the new draw order; the source-name recovery sends the token; an empty recovered token is never carried forward. Re-review after. |
+| 11 | f94b4cf | as planned. Explain plan names `events_correlation_order_idx` with no Sort node; the 50,000-event probe that found the regression now measures 0.038 ms per draw. Executor found that the plan's "the ignored tests prove the migration applies" was false without a rebuild, because `sqlx::migrate!` embeds the directory at compile time; the sentence is corrected in Task 11 and the cause is fixed in Task 12. Re-review closed the index finding and both runbook lines; found two Important runbook truths (the section 2 shortcut skips the token guard; replay tenants do have a token-less copy of the source, so disabling it pauses nothing) and three Minors. Audit 2026-09-10: replay source copy confirmed in `pilot_store.rs`, migration and runbook lines confirmed, gate script exit 0 with database tests. |
+| 12 | | pending. Build script so migrations rebuild; runbook: no shortcut past recovery, the truth about replay tenants and where pausing happens, sizing rule includes the digest, re-runnable day-one dataset name, health check waits for startup. Final re-review after is the handoff gate. |
 
 Executor's deferred-minor ledger, kept for the final review: partial mid-batch database failure commits earlier rows and returns 500 without touching last-seen (Grafana's retry deduplicates); the truncation warning fires before persistence, so it can name a group a later database failure never stored; the Task 2 minors as recorded by the executing session. Closed by Task 3b: the `_ =>` catch-all and the `truncatedAlerts` read on every payload. Closed by Task 3c: silent generic-webhook refusals, the unpinned `truncatedAlerts` preservation, and the README's imprecise description of the bound. Closed by Task 3d: no test in the above-500 regime, and the two "full-cap" test comments. Informational, kept: per-request insert count now scales with the body limit, a few thousand sequential inserts at most, seconds on the pilot host; revisit only if Grafana's webhook timeout is ever hit. From Task 3d, kept: the 413 warning's message says "ingest limit" on every route; the `LARGE_BATCH` test comment describes a body-limit regime the adapter crate cannot exercise; `http-body-util` is pinned in the server crate rather than the workspace table. Carried into Task 5: the fallback must be registered before the layer block (done in 7c84284). Carried into Task 9: the README's "fattest measured" wording, and the "In Docker" subsection's position. From Tasks 4 to 6, kept: no dependency-caching layer in the Dockerfile (build speed only); a bare `/api` with nothing after it reaches the SPA shell (the `/api/{*rest}` catch-all needs a segment). Closed by Task 6b: `--locked` on the release build, the image running as root, and `curl` installed for a healthcheck that did not exist.
