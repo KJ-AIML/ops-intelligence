@@ -3462,6 +3462,85 @@ Then rerun the whole-branch review from 8307504 to HEAD. Expected: nothing above
 
 ---
 
+### Task 13: The four Minors
+
+Added after the final review of 8307504..a7c5a67, which met the handoff gate. All four are one-line documentation fixes, and three of them are statements that are false as written, in the two documents a stranger follows. Take them all; the gate is already met, so this is the last task.
+
+**Files:**
+- Modify: `docs/pilot-runbook.md` (sections 4, 5)
+- Modify: `README.md` (two curl blocks)
+
+- [ ] **Step 1: The day-one check must actually repeat**
+
+Run labels are globally unique (`pilot_runs_label_key` in migration 0006), so the second day's `smoke` is refused. In section 5, change the replay line to:
+
+```sh
+docker compose run --rm worker pilot replay day-$(date +%F) smoke-$(date +%F)
+```
+
+and change the sentence after the block to:
+
+```markdown
+Both names carry the date, so the check can be repeated on any day without a
+name clash. If you do repeat it on one day, add a suffix to the run label:
+dataset names must be unique per tenant, run labels unique everywhere.
+```
+
+- [ ] **Step 2: Finish the worked example, and say what to set**
+
+In section 4, the example stops before the arithmetic that matters: 1,000 alerts at 4.6 KB is 4.6 MB, which is over the 4 MiB limit named two sentences earlier, so an operator who follows it gets exactly the 413s section 9 says cannot happen. Replace the sentence beginning "If your alerts are unusually large" with:
+
+```markdown
+`1000` suits alerts of about 3 KB or less. If yours are larger, work it out:
+`Max alerts` times (bytes per alert plus about 600 bytes for Grafana's rendered
+digest of that alert) must stay under 4 MiB with room to spare. A 4 KB alert
+counts as about 4.6 KB, so 1,000 of them would be 4.6 MB — over the limit, and
+`Max alerts` should be about `700` instead. If you are not sure how big your
+alerts are, tell the author and leave it at `1000`; section 9 says which log
+line means you guessed high.
+```
+
+- [ ] **Step 3: The README's own examples send the token**
+
+The README tells the reader to set `API_TOKEN`, then shows two source-creation calls without it. Both fail with 401 on a configured server. Add the header to each:
+
+```sh
+curl -X POST localhost:8080/api/v1/sources -H "authorization: Bearer $API_TOKEN" \
+     -H 'content-type: application/json' -d '{"name":"grafana-live"}'
+```
+
+```sh
+curl -X POST localhost:8080/api/v1/sources -H "authorization: Bearer $API_TOKEN" \
+     -H 'content-type: application/json' \
+     -d '{"name":"grafana-live","source_type":"grafana"}'
+```
+
+The ingestion call in the same block keeps no header: ingestion authenticates with the per-source token in its URL. Add after the first block: "Ingestion needs no `authorization` header; the token in its URL is its credential. Everything else under `/api/v1` needs one when `API_TOKEN` is set."
+
+- [ ] **Step 4: Say that a recreate truncates the log**
+
+In section 5, after the `docker compose logs server` bullet, add:
+
+```markdown
+  That reads the current container's log only. Recreating the server — the
+  tenant swap in section 6, or a host reboot — starts a fresh one, so check
+  before you recreate anything, and treat a suspiciously quiet log after a
+  restart as "no history", not "no problems".
+```
+
+- [ ] **Step 5: Checks and commit**
+
+Run `sh scripts/check.sh` with `TEST_DATABASE_URL` set. No code changes, so the gate should be unchanged.
+
+```bash
+git add docs/pilot-runbook.md README.md docs/plans/2026-09-08-pilot-handoff.md
+git commit -m "Handoff: day-one check repeats, the sizing example finishes its arithmetic, README examples send the token, log truncation is stated"
+```
+
+No further review. The gate was met at a7c5a67 and this task changes only prose.
+
+---
+
 ## Self-review against the spec
 
 - **Tech sheet 15, adapter responsibilities:** preserve original payload (Task 2, group + alert), extract status (state_raw), extract labels, extract timestamps (startsAt/endsAt), map severity (via `labels.severity` through core), derive service/resource where possible, map resolved into recovery (state `resolved` → `EventState::Resolved`). Covered.
@@ -3503,6 +3582,8 @@ Then rerun the whole-branch review from 8307504 to HEAD. Expected: nothing above
 | review | | whole-branch review of 8307504..d43a9e7, 28 commits. Two Critical: the runbook's ufw recipe does not restrict a Docker-published port, so the unauthenticated write-capable API stays open to the whole network; unmapped `severity` tokens fail every affected alert at normalization, which the runbook's "zero events is expected" hides until day five. One Important: the correlator breaks timestamp ties on a random id, so replay determinism is accidental. Verified by the author against the code on 2026-09-09; gate script exit 0 on d43a9e7. |
 | 10 | 11471d1, 438d36f, 5f1ee59, f757dd2, da1d9e2 | all four parts as planned. Part B's test failed three of three runs before the fix with three different random patterns and passed five of five after. Part D's test proven by flipping a status code. Executor rebuilt the image and verified both configurations live: loopback default, and published with the token, including that the healthcheck and ingestion stay outside the bearer check. Re-review closed both Criticals, determinism and the ingest test; found two Important runbook lines and, by redoing the reviewer's own performance probe on a realistic table, an index regression from Part B. Audit 2026-09-10: gate script exit 0 with database tests, index definitions and runbook lines confirmed against the tree. |
 | 11 | f94b4cf | as planned. Explain plan names `events_correlation_order_idx` with no Sort node; the 50,000-event probe that found the regression now measures 0.038 ms per draw. Executor found that the plan's "the ignored tests prove the migration applies" was false without a rebuild, because `sqlx::migrate!` embeds the directory at compile time; the sentence is corrected in Task 11 and the cause is fixed in Task 12. Re-review closed the index finding and both runbook lines; found two Important runbook truths (the section 2 shortcut skips the token guard; replay tenants do have a token-less copy of the source, so disabling it pauses nothing) and three Minors. Audit 2026-09-10: replay source copy confirmed in `pilot_store.rs`, migration and runbook lines confirmed, gate script exit 0 with database tests. |
-| 12 | | pending. Build script so migrations rebuild; runbook: no shortcut past recovery, the truth about replay tenants and where pausing happens, sizing rule includes the digest, re-runnable day-one dataset name, health check waits for startup. Final re-review after is the handoff gate. |
+| 12 | 50c11e1, a7c5a67 | as planned, plus a README sentence carrying the same "unreachable" claim the task was correcting. Build script proven: after touching a migration, `max(version)` in `_sqlx_migrations` is 7, which Task 11 could not reach. Three plan anchors matched nothing on a literal search because they were hard-wrapped; located and handed over. The fresh-agent pass found a defect the task introduced — "the one marked webhook token set" is the label every token-bearing source wears — fixed to match on the source name; and established that the tenant badge is a hardcoded literal, so the page looks identical after a tenant swap. Section 7's pause verified end to end: PATCH 200, then ingest 400. Docker Desktop reset wiped the containers mid-run; nothing irreplaceable, fixture regenerated and re-verified to the README's documented counts. |
+| final review | | 8307504..a7c5a67, 36 commits, 36 files, ~6,000 insertions. Critical clean, Important clean, four Minors. **Handoff gate met.** |
+| 13 | | pending, optional. The four Minors: the day-one check cannot repeat because run labels are globally unique; section 4's worked example exceeds the limit it cites; the README's own source-creation examples omit the token it tells you to set; `docker compose logs` spans only the current container. All prose; no review after. |
 
 Executor's deferred-minor ledger, kept for the final review: partial mid-batch database failure commits earlier rows and returns 500 without touching last-seen (Grafana's retry deduplicates); the truncation warning fires before persistence, so it can name a group a later database failure never stored; the Task 2 minors as recorded by the executing session. Closed by Task 3b: the `_ =>` catch-all and the `truncatedAlerts` read on every payload. Closed by Task 3c: silent generic-webhook refusals, the unpinned `truncatedAlerts` preservation, and the README's imprecise description of the bound. Closed by Task 3d: no test in the above-500 regime, and the two "full-cap" test comments. Informational, kept: per-request insert count now scales with the body limit, a few thousand sequential inserts at most, seconds on the pilot host; revisit only if Grafana's webhook timeout is ever hit. From Task 3d, kept: the 413 warning's message says "ingest limit" on every route; the `LARGE_BATCH` test comment describes a body-limit regime the adapter crate cannot exercise; `http-body-util` is pinned in the server crate rather than the workspace table. Carried into Task 5: the fallback must be registered before the layer block (done in 7c84284). Carried into Task 9: the README's "fattest measured" wording, and the "In Docker" subsection's position. From Tasks 4 to 6, kept: no dependency-caching layer in the Dockerfile (build speed only); a bare `/api` with nothing after it reaches the SPA shell (the `/api/{*rest}` catch-all needs a segment). Closed by Task 6b: `--locked` on the release build, the image running as root, and `curl` installed for a healthcheck that did not exist.

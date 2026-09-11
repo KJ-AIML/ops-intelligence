@@ -200,12 +200,16 @@ source's credential: it is never returned again, never logged, and it identifies
 the tenant, so no request body can select an organization.
 
 ```sh
-curl -X POST localhost:8080/api/v1/sources -H 'content-type: application/json'      -d '{"name":"grafana-live"}'
+curl -X POST localhost:8080/api/v1/sources -H "authorization: Bearer $API_TOKEN" \
+     -H 'content-type: application/json' -d '{"name":"grafana-live"}'
 
 curl -X POST localhost:8080/api/v1/ingest/webhook/$TOKEN      -H 'content-type: application/json'      -d '{"timestamp":"2026-09-03T09:42:10+07:00","title":"API latency high",
           "severity":"warning","service":"payment-api","resource":"api-prod-01",
           "environment":"production","state":"firing","external_id":"grafana-123"}'
 ```
+
+Ingestion needs no `authorization` header; the token in its URL is its
+credential. Everything else under `/api/v1` needs one when `API_TOKEN` is set.
 
 `timestamp` and `title` are the required minimum. Ingestion persists the
 RawSignal and returns immediately — `202` for a new signal, `200` with
@@ -247,7 +251,8 @@ Grafana payload shapes this is not expected to trigger and exists only as a
 safety net.
 
 ```sh
-curl -X POST localhost:8080/api/v1/sources -H 'content-type: application/json' \
+curl -X POST localhost:8080/api/v1/sources -H "authorization: Bearer $API_TOKEN" \
+     -H 'content-type: application/json' \
      -d '{"name":"grafana-live","source_type":"grafana"}'
 ```
 

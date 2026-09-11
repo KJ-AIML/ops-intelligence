@@ -232,10 +232,13 @@ In Grafana (Alerting → Contact points):
    ingestion URL from step 3. HTTP method **POST**. Leave "Send resolved" on:
    recoveries are half the data. Set **Max alerts** to `1000`. This is not
    optional: it is what guarantees a fleet-wide storm is truncated with a count
-   instead of refused whole. If your alerts are unusually large, the rule is
-   `Max alerts` times (bytes per alert plus about 600 bytes for Grafana's
-   rendered digest of that alert) under 4 MiB with margin; a 4 KB alert
-   therefore counts as about 4.6 KB.
+   instead of refused whole. `1000` suits alerts of about 3 KB or less. If yours
+   are larger, work it out: `Max alerts` times (bytes per alert plus about 600
+   bytes for Grafana's rendered digest of that alert) must stay under 4 MiB
+   with room to spare. A 4 KB alert counts as about 4.6 KB, so 1,000 of them
+   would be 4.6 MB — over the limit, and `Max alerts` should be about `700`
+   instead. If you are not sure how big your alerts are, tell the author and
+   leave it at `1000`; section 9 says which log line means you guessed high.
 2. Click **Test** and send the test notification. Back on the Sources page, the
    source's "Last seen" should update within a few seconds. If it does not, the
    host is not reachable from Grafana; check the firewall before anything else.
@@ -263,11 +266,12 @@ today instead of on day five. Use the source name from section 3.
 
 ```sh
 docker compose run --rm worker pilot dataset create day-$(date +%F) REPLACE_WITH_THE_SOURCE_NAME_FROM_SECTION_3
-docker compose run --rm worker pilot replay day-$(date +%F) smoke
+docker compose run --rm worker pilot replay day-$(date +%F) smoke-$(date +%F)
 ```
 
-The dataset name carries the date, so the check can be repeated on any day
-without a name clash.
+Both names carry the date, so the check can be repeated on any day without a
+name clash. If you do repeat it on one day, add a suffix to the run label:
+dataset names must be unique per tenant, run labels unique everywhere.
 
 Expected: an `events` line ending in `(0 failed)`. If the failed count is not
 zero, list the reasons and send them to the author the same day:
@@ -295,6 +299,10 @@ the mapping on their side before the final replay in section 6.
   here means Grafana sent something the engine could not take whole. Section 9
   says what each one means; note it for the review session. No output — grep
   exits non-zero — is the healthy result; it does not mean the command failed.
+  That reads the current container's log only. Recreating the server — the
+  tenant swap in section 6, or a host reboot — starts a fresh one, so check
+  before you recreate anything, and treat a suspiciously quiet log after a
+  restart as "no history", not "no problems".
 
 Do not run `process` or `correlate` against the live tenant during the capture.
 The capture tenant stays raw; the analysis happens by replay (section 6). This is
