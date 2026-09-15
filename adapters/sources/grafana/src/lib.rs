@@ -199,7 +199,9 @@ pub fn extract_facts(payload: &Value) -> Result<SourceFacts, DomainError> {
     // ponytail: which label carries environment/service/resource is a constant
     // until real Grafana data says otherwise; move it to sources.config with
     // the other per-source mappings.
-    let environment = first_label(&labels, &["environment", "env"]).map(str::to_owned);
+    // `cluster` last: Alertmanager stamps it as an externalLabel, so alerts
+    // forwarded from it carry a cluster identity and no `environment` at all.
+    let environment = first_label(&labels, &["environment", "env", "cluster"]).map(str::to_owned);
     let service = first_label(&labels, &["service", "job", "app"]).map(str::to_owned);
     let resource =
         first_label(&labels, &["instance", "host", "resource", "pod"]).map(str::to_owned);
@@ -221,7 +223,12 @@ pub fn extract_facts(payload: &Value) -> Result<SourceFacts, DomainError> {
         environment,
         service,
         resource,
-        severity_raw: labels.get("severity").cloned(),
+        // `severity` is the contract (tech sheet 14); `tier` is a common
+        // alternative in Grafana estates, where the label doubles as the
+        // notification-routing key. Same vocabulary, different name — and
+        // missing it is silent, because an absent severity on a firing alert
+        // falls back to a default rather than failing.
+        severity_raw: first_label(&labels, &["severity", "tier"]).map(str::to_owned),
         state_raw: Some(status.to_string()),
         external_id: Some(format!("{fingerprint}:{status}:{starts_at_raw}")),
         labels,

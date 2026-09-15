@@ -28,19 +28,34 @@ const CONDITION_TABLE: &[(EventFamily, &[&str])] = &[
     ),
     (
         EventFamily::ErrorRate,
-        &["5xx", "error rate", "errorrate", "exception rate"],
+        &[
+            "5xx",
+            "error rate",
+            "errorrate",
+            "exception rate",
+            "error log",
+        ],
     ),
     (EventFamily::SaturationCpu, &["cpu"]),
-    (EventFamily::SaturationMemory, &["memory", "rss", "heap"]),
+    (
+        EventFamily::SaturationMemory,
+        // "oomkilled" is the Kubernetes termination reason verbatim; "oom killed"
+        // covers the hyphenated and spaced spellings after normalization. Bare
+        // "oom" is deliberately absent — it is a substring of ordinary words.
+        &["memory", "rss", "heap", "oomkilled", "oom killed"],
+    ),
     (
         EventFamily::SaturationDisk,
-        &["disk", "inode", "free space", "volume"],
+        // "pvc" catches PersistentVolumeClaim alerts, which name neither a disk
+        // nor a volume in their title.
+        &["disk", "inode", "free space", "volume", "pvc"],
     ),
     (
         EventFamily::Connectivity,
         &[
             "dns",
             "connection pool",
+            "connection error",
             "replication",
             "network",
             "servfail",
@@ -48,6 +63,10 @@ const CONDITION_TABLE: &[(EventFamily, &[&str])] = &[
     ),
     (
         EventFamily::Availability,
+        // Process-death vocabulary lives here, and last: a crash, a panic or a
+        // fatal is the service failing to stay up. It sits below the saturation
+        // families on purpose, so an OOM kill is classified by its cause
+        // (memory) rather than by its symptom (the container died).
         &[
             "down",
             "unreachable",
@@ -57,6 +76,9 @@ const CONDITION_TABLE: &[(EventFamily, &[&str])] = &[
             "connection refused",
             "timeout",
             "service restored",
+            "crash",
+            "panic",
+            "fatal",
         ],
     ),
 ];
@@ -121,13 +143,17 @@ pub fn classify(
         EventState::Firing | EventState::Resolved => CONDITION_TABLE,
     };
 
+    // Hyphens become spaces so one keyword covers both spellings a vendor might
+    // use: "crash-looping" and "crash looping", "error-log" and "error log",
+    // "health-check" and "health check". Keywords below are therefore always
+    // written with spaces.
     let haystack = {
         let mut s = hints.title.to_lowercase();
         if let Some(message) = &hints.message {
             s.push(' ');
             s.push_str(&message.to_lowercase());
         }
-        s
+        s.replace('-', " ")
     };
 
     for (family, keywords) in table {
