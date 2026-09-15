@@ -1,3 +1,6 @@
 /target
 .env
 *.pdb
+
+# Agent working notes: deferred-minor ledger and task reports, local only.
+.superpowers/
