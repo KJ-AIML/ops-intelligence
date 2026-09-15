@@ -440,8 +440,17 @@ export TEST_DATABASE_URL=postgres://ops:ops_local_dev@localhost:55432/ops_normal
 cargo test -p ops-persistence --test normalization -- --ignored
 ```
 
-In PowerShell set `$env:TEST_DATABASE_URL` instead of `export`. Create the test DB
-once; tests use fresh tenant IDs on each run and retain results for inspection.
+In PowerShell set `$env:TEST_DATABASE_URL` instead of `export`. Tests use fresh
+tenant IDs on each run and retain results for inspection, so the database can be
+reused — but recreate it whenever a migration file changes, or `sqlx` refuses to
+run with `migration N was previously applied but has been modified`. It records a
+checksum per migration and a long-lived scratch database outlives the file it was
+seeded from:
+
+```sh
+docker compose exec -T postgres dropdb -U ops ops_normalization_test
+docker compose exec -T postgres createdb -U ops ops_normalization_test
+```
 They verify 69 rows → 67 RawSignals → 67 Events, historical timestamps, matching
 family/severity/state, evidence linkage, reruns, competing processors, two-tenant
 isolation, persisted failures, and rollback after a database write failure.
