@@ -93,6 +93,45 @@ fn an_explicit_severity_label_still_wins_over_tier() {
 }
 
 #[test]
+fn a_tier_value_that_is_not_a_severity_fails_loudly_rather_than_guessing() {
+    // Routing tiers are not always severities. A tier of `security` says which
+    // escalation path an alert takes, not how bad it is, and the engine has no
+    // honest mapping for it.
+    //
+    // Reading `tier` at all changes what happens here: before, the label was
+    // ignored and the alert silently took the absent-severity default. Now it is
+    // a validation error, so the signal is stored with its reason, counted on the
+    // Overview's failed-signals tile, and named in the day-one smoke replay the
+    // runbook asks for. Losing one alert type visibly beats recording every one
+    // of them at a severity nobody chose.
+    //
+    // The remedy is configuration, not code: map the token for that source.
+    let now: DateTime<Utc> = "2030-01-01T00:00:00Z".parse().unwrap();
+    let body = alert(
+        "Auth-failure spike",
+        json!({ "alertname": "AuthFailure", "tier": "security" }),
+    );
+    let signal = split_batch(&body).unwrap().remove(0);
+    let raw = RawSignal::received(
+        OrganizationId::new(),
+        SourceId::new(),
+        Some(signal.external_id),
+        CONTENT_TYPE,
+        signal.payload,
+        now,
+    );
+
+    let error = GrafanaNormalizer
+        .normalize(&raw, SourceType::Grafana, now)
+        .expect_err("an unmappable tier must not be guessed at")
+        .to_string();
+    assert!(
+        error.contains("security"),
+        "the error must name the token an operator has to map: {error}"
+    );
+}
+
+#[test]
 fn a_cluster_label_carries_the_environment_when_no_environment_label_exists() {
     let event = normalize(&alert(
         "Node disk > 85%",
